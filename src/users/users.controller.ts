@@ -1,15 +1,12 @@
 import {
   Body,
   Controller,
-  FileTypeValidator,
   Get,
-  MaxFileSizeValidator,
-  ParseFilePipe,
   Patch,
-  Request,
-  UploadedFile,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
+  Request
 } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import {
@@ -17,8 +14,10 @@ import {
   ApiBody,
   ApiConsumes,
   ApiOperation,
+  ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UsersService } from './users.service';
@@ -32,8 +31,8 @@ export class UsersController {
 
   @Get('me')
   @ApiOperation({ summary: 'Obter perfil do usuário logado' })
-  getProfile(@Request() req) {
-    return this.usersService.getProfile(req.user.id);
+  getProfile(@CurrentUser('id') userId: string,) {
+    return this.usersService.getProfile(userId);
   }
 
   @Patch('me')

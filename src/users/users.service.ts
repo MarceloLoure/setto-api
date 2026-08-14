@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FirebaseStorageService } from '../storage/storage.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -18,7 +23,13 @@ export class UsersService {
         name: true,
         email: true,
         phone: true,
+        cpf: true,
+        gender: true,
+        birthDate: true,
+        city: true,
+        state: true,
         avatarUrl: true,
+        coverUrl: true,
         bio: true,
         role: true,
         btRating: true,
@@ -48,16 +59,15 @@ export class UsersService {
       throw new NotFoundException('Usuário não encontrado.');
     }
 
-    // 1. Tratamento e Validação de CPF
+    // 1. Validação de CPF
     let cleanedCpf: string | undefined = undefined;
     if (dto.cpf) {
-      cleanedCpf = dto.cpf.replace(/\D/g, ''); // Mantém apenas dígitos
+      cleanedCpf = dto.cpf.replace(/\D/g, '');
 
       if (cleanedCpf.length !== 11) {
         throw new ConflictException('CPF inválido. Deve conter 11 dígitos.');
       }
 
-      // Checa se o CPF já pertence a outro usuário
       const cpfExists = await this.prisma.user.findFirst({
         where: {
           cpf: cleanedCpf,
@@ -70,7 +80,7 @@ export class UsersService {
       }
     }
 
-    // 2. Upload de Arquivos (Avatar e Cover) em paralelo
+    // 2. Upload de Fotos
     let avatarUrl: string | undefined = undefined;
     let coverUrl: string | undefined = undefined;
 
@@ -80,7 +90,9 @@ export class UsersService {
       uploadPromises.push(
         this.storageService
           .uploadPhoto(files.avatar[0], 'avatars', userId)
-          .then((url) => (avatarUrl = url)),
+          .then((url) => {
+            avatarUrl = url;
+          }),
       );
     }
 
@@ -88,7 +100,9 @@ export class UsersService {
       uploadPromises.push(
         this.storageService
           .uploadPhoto(files.cover[0], 'covers', userId)
-          .then((url) => (coverUrl = url)),
+          .then((url) => {
+            coverUrl = url;
+          }),
       );
     }
 
@@ -96,21 +110,24 @@ export class UsersService {
       await Promise.all(uploadPromises);
     }
 
-    // 3. Atualização no banco
+    // 3. Montagem do payload de atualização do Prisma
+    const dataToUpdate: Prisma.UserUpdateInput = {
+      name: dto.name,
+      phone: dto.phone,
+      bio: dto.bio,
+      gender: dto.gender,
+      city: dto.city,
+      state: dto.state,
+      birthDate: dto.birthDate ? new Date(dto.birthDate) : undefined,
+    };
+
+    if (cleanedCpf) dataToUpdate.cpf = cleanedCpf;
+    if (avatarUrl) dataToUpdate.avatarUrl = avatarUrl;
+    if (coverUrl) dataToUpdate.coverUrl = coverUrl;
+
     return this.prisma.user.update({
       where: { id: userId },
-      data: {
-        name: dto.name,
-        phone: dto.phone,
-        bio: dto.bio,
-        gender: dto.gender,
-        city: dto.city,
-        state: dto.state,
-        birthDate: dto.birthDate ? new Date(dto.birthDate) : undefined,
-        ...(cleanedCpf && { cpf: cleanedCpf }),
-        ...(avatarUrl && { avatarUrl }),
-        ...(coverUrl && { coverUrl }),
-      },
+      data: dataToUpdate,
       select: {
         id: true,
         name: true,
