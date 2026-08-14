@@ -1,0 +1,238 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  SUPERADMIN
+  ARENA_ADMIN
+  RECEPTIONIST
+  TEACHER
+  ATHLETE
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum Sport {
+  BEACH_TENNIS
+  FOOTVOLLEY
+  BEACH_VOLLEYBALL
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+enum PaymentMethod {
+  PIX
+  CREDIT_CARD
+  DEBIT_CARD
+  CASH
+}
+
+enum PaymentCategory {
+  BOOKING       // Recebimento de Agendamento
+  BAR_SNACKBAR  // Lanchonete / Bar
+  EQUIPMENT_RENTAL // Aluguel de Raquetes / Bolas
+  SPONSORSHIP   // Patrocínio
+  OTHER         // Outros
+}
+
+enum PaymentStatus {
+  COMPLETED
+  PENDING
+  REFUNDED
+}
+
+model User {
+  id           String        @id @default(uuid())
+  name         String
+  email        String        @unique
+  password     String?
+  phone        String?
+  avatarUrl    String?
+  role         Role          @default(ATHLETE)
+  btRating     Float         @default(1000.0) // Beach Tennis Rating
+  footvolleyElo Float        @default(1000.0) // Footvolley Elo
+
+  googleId      String?       @unique
+  appleId       String?       @unique
+  
+  arenasManaged Arena[]  @relation("ArenaAdmins")
+  activeArenaId String?
+  arenaRequests ArenaRequest[]
+
+  arenasEmployed Arena[]  @relation("ArenaStaff")
+
+  sentInvites    StaffInvite[] @relation("SentInvites")
+
+  bio           String?   // Apresentação do professor
+  hourlyRate    Decimal?  @db.Decimal(10, 2) // Valor da hora/aula do professor
+
+  payments Payment[]
+  
+  bookings     Booking[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  paymentsCreated Payment[] @relation("PaymentsCreated")
+
+  @@map("users")
+}
+
+model Arena {
+  id          String        @id @default(uuid())
+  name        String
+  cnpj       String?       @unique // CNPJ
+  address     String?
+  city        String
+  state       String
+  
+  courts      Court[]
+  bookings    Booking[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  admins    User[]   @relation("ArenaAdmins")
+  staff     User[]   @relation("ArenaStaff")
+
+  invites   StaffInvite[]
+
+  payments Payment[]
+
+  @@map("arenas")
+}
+
+model ArenaRequest {
+  id           String        @id @default(uuid())
+  arenaName    String
+  cnpj         String        // CNPJ
+  address      String?
+  city         String
+  state        String
+  phone        String?
+  status       RequestStatus @default(PENDING)
+  
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@map("arena_requests")
+}
+
+model Court {
+  id          String        @id @default(uuid())
+  name        String        // e.g., "Court 1 - Covered"
+  sport       Sport
+  hourlyRate  Decimal       @db.Decimal(10, 2)
+  isCovered   Boolean       @default(false)
+  isActive    Boolean       @default(true)
+  
+  arenaId     String
+  arena       Arena         @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  
+  bookings    Booking[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@map("courts")
+}
+
+model Booking {
+  id          String        @id @default(uuid())
+  startTime   DateTime
+  endTime     DateTime
+  totalAmount Decimal       @db.Decimal(10, 2)
+  status      BookingStatus @default(CONFIRMED)
+
+  customerName  String?
+  customerPhone String?
+  
+  courtId     String
+  court       Court         @relation(fields: [courtId], references: [id], onDelete: Cascade)
+  
+  userId      String?
+  user          User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  arenaId     String
+  arena       Arena         @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  payment Payment?
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@map("bookings")
+}
+
+model StaffInvite {
+  id          String       @id @default(uuid())
+  email       String
+  role        Role         // RECEPTIONIST ou TEACHER
+  status      InviteStatus @default(PENDING)
+
+  arenaId     String
+  arena       Arena        @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  invitedById String
+  invitedBy   User         @relation("SentInvites", fields: [invitedById], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@map("staff_invites")
+}
+
+model Payment {
+  id            String          @id @default(uuid())
+  description   String          // Ex: "Aluguel Quadra 1" ou "Venda de Água e Raquete"
+  amount        Decimal         @db.Decimal(10, 2)
+  method        PaymentMethod
+  category      PaymentCategory @default(OTHER)
+  status        PaymentStatus   @default(COMPLETED)
+  paidAt        DateTime        @default(now())
+
+  // Vinculo com a Arena
+  arenaId       String
+  arena         Arena           @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  // Vinculo Opcional com o Agendamento (se for pagamento de reserva)
+  bookingId     String?         @unique
+  booking       Booking?        @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  // Vinculo Opcional com o Atleta/Cliente (se souber quem pagou)
+  userId        String?
+  user          User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  // Funcionário / Admin que lançou o pagamento
+  createdById   String
+  createdBy     User            @relation("PaymentsCreated", fields: [createdById], references: [id])
+
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@map("payments")
+}
