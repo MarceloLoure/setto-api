@@ -11,7 +11,7 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import {
   ApiBearerAuth,
   ApiBody,
@@ -37,9 +37,16 @@ export class UsersController {
   }
 
   @Patch('me')
-  @UseInterceptors(FileInterceptor('avatar'))
+  @UseInterceptors(
+    FileFieldsInterceptor([
+      { name: 'avatar', maxCount: 1 },
+      { name: 'cover', maxCount: 1 },
+    ]),
+  )
   @ApiConsumes('multipart/form-data')
-  @ApiOperation({ summary: 'Atualizar perfil e foto de avatar' })
+  @ApiOperation({
+    summary: 'Enriquecer/Atualizar perfil, foto de avatar e foto de capa',
+  })
   @ApiBody({
     schema: {
       type: 'object',
@@ -47,28 +54,35 @@ export class UsersController {
         avatar: {
           type: 'string',
           format: 'binary',
-          description: 'Foto de perfil (JPG, PNG ou WEBP até 5MB)',
+          description: 'Foto de perfil (JPG, PNG ou WEBP)',
         },
-        name: { type: 'string', example: 'João Silva' },
+        cover: {
+          type: 'string',
+          format: 'binary',
+          description: 'Foto de capa (JPG, PNG ou WEBP)',
+        },
+        name: { type: 'string', example: 'Marcelo Silva' },
         phone: { type: 'string', example: '+5543999999999' },
-        bio: { type: 'string', example: 'Professor de Beach Tennis' },
+        cpf: { type: 'string', example: '12345678901' },
+        gender: { type: 'string', enum: ['MALE', 'FEMALE', 'OTHER'], example: 'MALE' },
+        birthDate: { type: 'string', example: '1995-08-20' },
+        city: { type: 'string', example: 'Londrina' },
+        state: { type: 'string', example: 'PR' },
+        bio: { type: 'string', example: 'Atleta amador de Beach Tennis' },
       },
     },
   })
+  @ApiResponse({ status: 200, description: 'Perfil atualizado com sucesso.' })
+  @ApiResponse({ status: 409, description: 'CPF já cadastrado em outra conta.' })
   updateProfile(
-    @Request() req,
+    @CurrentUser('id') userId: string,
     @Body() dto: UpdateProfileDto,
-    @UploadedFile(
-      new ParseFilePipe({
-        validators: [
-          new MaxFileSizeValidator({ maxSize: 5 * 1024 * 1024 }), // 5MB
-          new FileTypeValidator({ fileType: /(jpg|jpeg|png|webp)$/ }),
-        ],
-        fileIsRequired: false,
-      }),
-    )
-    file?: Express.Multer.File,
+    @UploadedFiles()
+    files?: {
+      avatar?: Express.Multer.File[];
+      cover?: Express.Multer.File[];
+    },
   ) {
-    return this.usersService.updateProfile(req.user.id, dto, file);
+    return this.usersService.updateProfile(userId, dto, files);
   }
 }

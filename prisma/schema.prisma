@@ -51,6 +51,12 @@ enum PaymentMethod {
   CASH
 }
 
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
 enum PaymentCategory {
   BOOKING       // Recebimento de Agendamento
   BAR_SNACKBAR  // Lanchonete / Bar
@@ -71,7 +77,15 @@ model User {
   email        String        @unique
   password     String?
   phone        String?
+
+  cpf           String?       @unique
+  gender        Gender?
+  birthDate     DateTime?
+  city          String?
+  state         String?
+
   avatarUrl    String?
+  coverUrl     String?
   role         Role          @default(ATHLETE)
   btRating     Float         @default(1000.0) // Beach Tennis Rating
   footvolleyElo Float        @default(1000.0) // Footvolley Elo
@@ -91,6 +105,8 @@ model User {
   hourlyRate    Decimal?  @db.Decimal(10, 2) // Valor da hora/aula do professor
 
   payments Payment[]
+
+  followedArenas ArenaFollower[]
   
   bookings     Booking[]
   createdAt    DateTime      @default(now())
@@ -116,6 +132,8 @@ model Arena {
 
   admins    User[]   @relation("ArenaAdmins")
   staff     User[]   @relation("ArenaStaff")
+
+  followers ArenaFollower[]
 
   invites   StaffInvite[]
 
@@ -235,4 +253,19 @@ model Payment {
   updatedAt     DateTime        @updatedAt
 
   @@map("payments")
+}
+
+model ArenaFollower {
+  id        String   @id @default(uuid())
+  
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  arenaId   String
+  arena     Arena    @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, arenaId])
+  @@map("arena_followers")
 }

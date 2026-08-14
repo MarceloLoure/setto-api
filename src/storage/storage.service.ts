@@ -3,7 +3,7 @@ import { getStorage } from 'firebase-admin/storage';
 import { v4 as uuidv4 } from 'uuid';
 import { initializeFirebaseAdmin } from '../firebase/firebase-admin.config';
 
-export type StorageFolder = 'avatars' | 'arenas' | 'courts' | 'receipts';
+export type StorageFolder = 'avatars' |'covers' | 'arenas' | 'courts' | 'receipts';
 
 @Injectable()
 export class FirebaseStorageService implements OnModuleInit {
