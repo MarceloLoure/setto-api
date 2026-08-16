@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import Redis from 'ioredis';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -16,6 +18,18 @@ import { FirebaseModule } from './firebase/firebase.module';
 
 @Module({
   imports: [
+    // ThrottlerModule.forRootAsync({
+    //   useFactory: () => ({
+    //     throttlers: [
+    //       { name: 'default', ttl: 60000, limit: 100 },
+    //       { name: 'strict', ttl: 60000, limit: 5 },
+    //     ],
+    //     // Conexão Redis compartilhada entre todas as réplicas
+    //     storage: new ThrottlerStorageRedisService(
+    //       new Redis(process.env.REDIS_URL || 'redis://localhost:6379'),
+    //     ),
+    //   }),
+    // }),
     FirebaseModule,
     ThrottlerModule.forRoot([
       {

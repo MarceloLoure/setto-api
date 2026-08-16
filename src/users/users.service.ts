@@ -80,35 +80,14 @@ export class UsersService {
       }
     }
 
-    // 2. Upload de Fotos
-    let avatarUrl: string | undefined = undefined;
-    let coverUrl: string | undefined = undefined;
-
-    const uploadPromises: Promise<any>[] = [];
-
-    if (files?.avatar?.[0]) {
-      uploadPromises.push(
-        this.storageService
-          .uploadPhoto(files.avatar[0], 'avatars', userId)
-          .then((url) => {
-            avatarUrl = url;
-          }),
-      );
-    }
-
-    if (files?.cover?.[0]) {
-      uploadPromises.push(
-        this.storageService
-          .uploadPhoto(files.cover[0], 'covers', userId)
-          .then((url) => {
-            coverUrl = url;
-          }),
-      );
-    }
-
-    if (uploadPromises.length > 0) {
-      await Promise.all(uploadPromises);
-    }
+    const [avatarUrl, coverUrl] = await Promise.all([
+      files?.avatar?.[0]
+        ? this.storageService.uploadPhoto(files.avatar[0], 'avatars', userId)
+        : undefined,
+      files?.cover?.[0]
+        ? this.storageService.uploadPhoto(files.cover[0], 'covers', userId)
+        : undefined,
+    ]);
 
     // 3. Montagem do payload de atualização do Prisma
     const dataToUpdate: Prisma.UserUpdateInput = {

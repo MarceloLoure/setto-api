@@ -1,31 +1,43 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Sport } from '@prisma/client';
-import { IsBoolean, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import { Type, Transform } from 'class-transformer';
+import {
+  IsBoolean,
+  IsEnum,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Min,
+} from 'class-validator';
 
 export class CreateCourtDto {
-  @ApiProperty({ example: 'Quadra 1 - Coberta' })
+  @ApiProperty({ example: 'Quadra 1 - Central Coberta' })
   @IsString()
-  @IsNotEmpty()
-  name: string;
+  @IsNotEmpty({ message: 'O nome da quadra é obrigatório' })
+  name!: string;
 
   @ApiProperty({ enum: Sport, example: Sport.BEACH_TENNIS })
-  @IsEnum(Sport)
+  @IsEnum(Sport, { message: 'Esporte inválido' })
   @IsNotEmpty()
-  sport: Sport;
+  sport!: Sport;
 
-  @ApiProperty({ example: 80.0 })
+  @ApiProperty({ example: 90.0, description: 'Valor da hora da quadra' })
+  @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })
-  @IsPositive()
+  @Min(0, { message: 'O valor da hora não pode ser negativo' })
   @IsNotEmpty()
-  hourlyRate: number;
+  hourlyRate!: number;
 
   @ApiPropertyOptional({ example: true, default: false })
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
   @IsBoolean()
-  @IsOptional()
-  isCovered?: boolean;
+  isCovered?: boolean = false;
 
-  @ApiPropertyOptional({ example: 'uuid-da-arena-opcional-para-superadmin' })
-  @IsString()
+  @ApiPropertyOptional({ example: 'uuid-da-arena' })
   @IsOptional()
+  @IsUUID('4')
   arenaId?: string;
 }

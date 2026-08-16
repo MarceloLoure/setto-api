@@ -21,6 +21,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UsersService } from './users.service';
+import { MAX_FILE_SIZE, multerImageFilter } from 'src/common/utils/multer-image.filter';
 
 @ApiTags('Users')
 @ApiBearerAuth()
@@ -40,7 +41,12 @@ export class UsersController {
     FileFieldsInterceptor([
       { name: 'avatar', maxCount: 1 },
       { name: 'cover', maxCount: 1 },
-    ]),
+    ],
+    {
+      limits: { fileSize: MAX_FILE_SIZE },
+      fileFilter: multerImageFilter,
+    },
+  ),
   )
   @ApiConsumes('multipart/form-data')
   @ApiOperation({

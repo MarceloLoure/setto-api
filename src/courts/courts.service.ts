@@ -1,50 +1,71 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { FirebaseStorageService } from '../storage/storage.service';
 import { CreateCourtDto } from './dto/create-court.dto';
 import { UpdateCourtDto } from './dto/update-court.dto';
-import { Role } from '@prisma/client';
 
 @Injectable()
 export class CourtsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storageService: FirebaseStorageService,
+  ) {}
 
-  // 1. Criar Quadra (Com suporte a múltiplas arenas do mesmo dono)
-  async create(user: any, dto: CreateCourtDto) {
-    // Busca o usuário atualizado com todas as arenas que ele gerencia
+  // 1. Criar Quadra (Permite já enviar fotos no cadastro)
+  async create(
+    user: any,
+    dto: CreateCourtDto,
+    files?: Express.Multer.File[],
+  ) {
     const dbUser = await this.prisma.user.findUnique({
       where: { id: user.id },
       include: { arenasManaged: { select: { id: true } } },
     });
 
     if (!dbUser) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException('Usuário não encontrado.');
     }
 
     const managedArenaIds = dbUser.arenasManaged.map((a) => a.id);
-
-    // Define qual arena receberá a quadra
-    let targetArenaId = dto.arenaId || dbUser.activeArenaId || managedArenaIds[0];
+    const targetArenaId = dto.arenaId || managedArenaIds[0];
 
     if (!targetArenaId) {
-      throw new BadRequestException('User is not associated with any Arena');
+      throw new BadRequestException('Usuário não possui vínculo com nenhuma Arena.');
     }
 
-    // Se NÃO for SUPERADMIN, valida se a arena informada realmente pertence ao usuário
-    if (user.role !== Role.SUPERADMIN) {
-      if (!managedArenaIds.includes(targetArenaId)) {
-        throw new ForbiddenException(
-          'You do not have permission to add courts to this arena',
-        );
-      }
+    if (user.role !== Role.SUPERADMIN && !managedArenaIds.includes(targetArenaId)) {
+      throw new ForbiddenException('Você não tem permissão para adicionar quadras nesta arena.');
     }
 
-    // Verifica se a arena realmente existe no banco
     const arena = await this.prisma.arena.findUnique({
       where: { id: targetArenaId },
     });
 
     if (!arena) {
-      throw new NotFoundException('Arena not found');
+      throw new NotFoundException('Arena não encontrada.');
+    }
+
+    // Upload de fotos (se enviadas)
+    const uploadedPhotos: string[] = [];
+    if (files && files.length > 0) {
+      if (files.length > 3) {
+        throw new BadRequestException('Uma quadra pode ter no máximo 3 fotos.');
+      }
+
+      for (const file of files) {
+        const url = await this.storageService.uploadPhoto(
+          file,
+          'courts',
+          targetArenaId,
+        );
+        uploadedPhotos.push(url);
+      }
     }
 
     return this.prisma.court.create({
@@ -53,79 +74,190 @@ export class CourtsService {
         sport: dto.sport,
         hourlyRate: dto.hourlyRate,
         isCovered: dto.isCovered ?? false,
+        isActive: true,
+        photos: uploadedPhotos,
         arenaId: targetArenaId,
       },
     });
   }
 
-  // 2. Lista Quadras de uma Arena Específica
-  async findByArena(arenaId: string) {
+  // 2. Listar Quadras de uma Arena
+  async findByArena(arenaId: string, onlyActive = false) {
     return this.prisma.court.findMany({
-      where: { arenaId },
-      orderBy: { createdAt: 'desc' },
+      where: {
+        arenaId,
+        ...(onlyActive && { isActive: true }),
+      },
+      orderBy: { createdAt: 'asc' },
     });
   }
 
-  // 3. Atualizar Quadra (Valida se a quadra pertence a QUALQUER uma das arenas do dono)
-  async update(courtId: string, user: any, dto: UpdateCourtDto) {
+  // 3. Buscar Detalhes de uma Quadra por ID
+  async findById(courtId: string) {
     const court = await this.prisma.court.findUnique({
       where: { id: courtId },
+      include: {
+        arena: {
+          select: { id: true, name: true, city: true, state: true },
+        },
+      },
     });
 
     if (!court) {
-      throw new NotFoundException('Court not found');
+      throw new NotFoundException('Quadra não encontrada.');
     }
 
-    if (user.role !== Role.SUPERADMIN) {
-      const dbUser = await this.prisma.user.findUnique({
-        where: { id: user.id },
-        include: { arenasManaged: { select: { id: true } } },
-      });
+    return court;
+  }
 
-      const managedArenaIds = dbUser?.arenasManaged.map((a) => a.id) || [];
+  // 4. Atualizar Quadra (Campos + Novas Fotos Unificados)
+  async update(
+    courtId: string,
+    user: any,
+    dto: UpdateCourtDto,
+    files?: Express.Multer.File[],
+  ) {
+    const court = await this.prisma.court.findUnique({
+      where: { id: courtId },
+      include: {
+        arena: {
+          include: { admins: { select: { id: true } } },
+        },
+      },
+    });
 
-      if (!managedArenaIds.includes(court.arenaId)) {
-        throw new ForbiddenException(
-          'You can only manage courts from your own arenas',
+    if (!court) {
+      throw new NotFoundException('Quadra não encontrada.');
+    }
+
+    const isAdmin = court.arena.admins.some((a) => a.id === user.id);
+    if (!isAdmin && user.role !== Role.SUPERADMIN) {
+      throw new ForbiddenException('Você só pode gerenciar quadras das suas próprias arenas.');
+    }
+
+    const newPhotosUrls: string[] = [];
+    if (files && files.length > 0) {
+      const currentCount = court.photos.length;
+      const incomingCount = files.length;
+
+      if (currentCount + incomingCount > 3) {
+        throw new BadRequestException(
+          `Limite de fotos excedido! Esta quadra já tem ${currentCount} foto(s) e o limite máximo é 3.`,
         );
       }
+
+      for (const file of files) {
+        const url = await this.storageService.uploadPhoto(
+          file,
+          'courts',
+          court.arenaId,
+        );
+        newPhotosUrls.push(url);
+      }
     }
+
+    const dataToUpdate: Prisma.CourtUpdateInput = {
+      ...(dto.name && { name: dto.name }),
+      ...(dto.sport && { sport: dto.sport }),
+      ...(dto.hourlyRate !== undefined && { hourlyRate: dto.hourlyRate }),
+      ...(dto.isCovered !== undefined && { isCovered: dto.isCovered }),
+      ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+      ...(newPhotosUrls.length > 0 && {
+        photos: [...court.photos, ...newPhotosUrls],
+      }),
+    };
 
     return this.prisma.court.update({
       where: { id: courtId },
-      data: dto,
+      data: dataToUpdate,
     });
   }
 
-  // 4. Remover Quadra
+  // 5. Remover Foto Específica da Quadra
+  async removeCourtPhoto(courtId: string, user: any, photoUrl: string) {
+    const court = await this.prisma.court.findUnique({
+      where: { id: courtId },
+      include: {
+        arena: { include: { admins: { select: { id: true } } } },
+      },
+    });
+
+    if (!court) throw new NotFoundException('Quadra não encontrada.');
+
+    const isAdmin = court.arena.admins.some((a) => a.id === user.id);
+    if (!isAdmin && user.role !== Role.SUPERADMIN) {
+      throw new ForbiddenException('Sem permissão para alterar fotos desta quadra.');
+    }
+
+    const updatedPhotos = court.photos.filter((p) => p !== photoUrl);
+
+    return this.prisma.court.update({
+      where: { id: courtId },
+      data: { photos: updatedPhotos },
+      select: { id: true, name: true, photos: true },
+    });
+  }
+
+  // 6. Toggle Status (Ativar / Desativar)
+  async toggleStatus(courtId: string, user: any, isActive?: boolean) {
+    const court = await this.prisma.court.findUnique({
+      where: { id: courtId },
+      include: {
+        arena: { include: { admins: { select: { id: true } } } },
+      },
+    });
+
+    if (!court) throw new NotFoundException('Quadra não encontrada.');
+
+    const isAdmin = court.arena.admins.some((a) => a.id === user.id);
+    if (!isAdmin && user.role !== Role.SUPERADMIN) {
+      throw new ForbiddenException('Sem permissão para alterar status desta quadra.');
+    }
+
+    const newStatus = isActive !== undefined ? isActive : !court.isActive;
+
+    return this.prisma.court.update({
+      where: { id: courtId },
+      data: { isActive: newStatus },
+      select: { id: true, name: true, isActive: true },
+    });
+  }
+
+  // 7. Remover Quadra (com verificação de reservas ativas)
   async remove(courtId: string, user: any) {
     const court = await this.prisma.court.findUnique({
       where: { id: courtId },
+      include: {
+        arena: { include: { admins: { select: { id: true } } } },
+      },
     });
 
-    if (!court) {
-      throw new NotFoundException('Court not found');
+    if (!court) throw new NotFoundException('Quadra não encontrada.');
+
+    const isAdmin = court.arena.admins.some((a) => a.id === user.id);
+    if (!isAdmin && user.role !== Role.SUPERADMIN) {
+      throw new ForbiddenException('Você só pode remover quadras das suas próprias arenas.');
     }
 
-    if (user.role !== Role.SUPERADMIN) {
-      const dbUser = await this.prisma.user.findUnique({
-        where: { id: user.id },
-        include: { arenasManaged: { select: { id: true } } },
-      });
+    // Checa se há agendamentos futuros antes de deletar fisicamente
+    const hasActiveBookings = await this.prisma.booking.findFirst({
+      where: {
+        courtId,
+        endTime: { gte: new Date() },
+        status: { in: ['CONFIRMED'] },
+      },
+    });
 
-      const managedArenaIds = dbUser?.arenasManaged.map((a) => a.id) || [];
-
-      if (!managedArenaIds.includes(court.arenaId)) {
-        throw new ForbiddenException(
-          'You can only remove courts from your own arenas',
-        );
-      }
+    if (hasActiveBookings) {
+      throw new BadRequestException(
+        'Não é possível excluir esta quadra pois ela possui agendamentos futuros. Considere inativá-la em vez de excluir.',
+      );
     }
 
     await this.prisma.court.delete({
       where: { id: courtId },
     });
 
-    return { message: 'Court deleted successfully' };
+    return { message: 'Quadra removida com sucesso.' };
   }
 }

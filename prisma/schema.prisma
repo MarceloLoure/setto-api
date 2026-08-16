@@ -35,6 +35,7 @@ enum BookingStatus {
   CONFIRMED
   CANCELLED
   COMPLETED
+  PENDING
 }
 
 enum InviteStatus {
@@ -121,9 +122,19 @@ model Arena {
   id          String        @id @default(uuid())
   name        String
   cnpj       String?       @unique // CNPJ
-  address     String?
-  city        String
-  state       String
+
+  address      String?       
+  number       String?      
+  complement   String?      
+  neighborhood String?       
+  zipCode      String?      
+  city         String
+  state        String       
+
+  isActive     Boolean       @default(true)
+
+  logoUrl     String? 
+  photos      String[]    @default([]) 
   
   courts      Court[]
   bookings    Booking[]
@@ -168,6 +179,8 @@ model Court {
   hourlyRate  Decimal       @db.Decimal(10, 2)
   isCovered   Boolean       @default(false)
   isActive    Boolean       @default(true)
+
+  photos      String[]  @default([])
   
   arenaId     String
   arena       Arena         @relation(fields: [arenaId], references: [id], onDelete: Cascade)

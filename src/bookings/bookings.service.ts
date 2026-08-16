@@ -18,48 +18,106 @@ export class BookingsService {
   async create(user: any, dto: CreateBookingDto) {
     const start = new Date(dto.startTime);
     const end = new Date(dto.endTime);
+    const now = new Date();
 
-    // Transação com Isolamento Serializable para impedir double-booking por concorrência
+    // 1. Validações Temporais
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      throw new BadRequestException('Formato de data inválido.');
+    }
+    if (start >= end) {
+      throw new BadRequestException('O horário de início deve ser anterior ao horário de término.');
+    }
+    if (start < now) {
+      throw new BadRequestException('Não é possível criar agendamentos no passado.');
+    }
+
+    const durationInHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+    if (durationInHours < 0.5) {
+      throw new BadRequestException('O tempo mínimo de agendamento é de 30 minutos.');
+    }
+
+    // 2. Transação Serializável para Prevenir Overbooking
     return this.prisma.$transaction(
-        async (tx) => {
-        // 1. Checa conflitos dentro do bloco transacional
-        const conflictingBooking = await tx.booking.findFirst({
-            where: {
-            courtId: dto.courtId,
-            status: BookingStatus.CONFIRMED,
-            OR: [
-                { startTime: { lte: start }, endTime: { gt: start } },
-                { startTime: { lt: end }, endTime: { gte: end } },
-                { startTime: { gte: start }, endTime: { lte: end } },
-            ],
+      async (tx) => {
+        // Busca a quadra real, pegando hourlyRate e arenaId direto do banco
+        const court = await tx.court.findUnique({
+          where: { id: dto.courtId },
+          include: {
+            arena: {
+              include: {
+                admins: { select: { id: true } },
+                staff: { select: { id: true } },
+              },
             },
+          },
+        });
+
+        if (!court || !court.isActive) {
+          throw new NotFoundException('Quadra não encontrada ou inativa.');
+        }
+        if (!court.arena.isActive) {
+          throw new BadRequestException('A arena desta quadra está inativa no momento.');
+        }
+
+        // 3. Controle de Impersonação (Criação de Balcão vs Atleta)
+        const isArenaStaff =
+          court.arena.admins.some((a) => a.id === user.id) ||
+          court.arena.staff.some((s) => s.id === user.id) ||
+          user.role === Role.SUPERADMIN;
+
+        let targetUserId = user.id;
+
+        if (dto.userId || dto.customerName) {
+          if (!isArenaStaff) {
+            throw new ForbiddenException(
+              'Apenas administradores ou funcionários da arena podem criar reservas para terceiros.',
+            );
+          }
+          targetUserId = dto.userId || null;
+        }
+
+        // 4. Cálculo Imutável de Preço no Backend
+        const hourlyRate = Number(court.hourlyRate);
+        const calculatedTotal = Number((durationInHours * hourlyRate).toFixed(2));
+
+        // 5. Checagem de Conflito de Horário
+        const conflictingBooking = await tx.booking.findFirst({
+          where: {
+            courtId: court.id,
+            status: { in: [BookingStatus.CONFIRMED, BookingStatus.COMPLETED] },
+            AND: [
+              { startTime: { lt: end } },
+              { endTime: { gt: start } },
+            ],
+          },
         });
 
         if (conflictingBooking) {
-            throw new ConflictException(
-            'Este horário acabou de ser reservado por outro cliente.',
-            );
+          throw new ConflictException('Já existe um agendamento para este horário nesta quadra.');
         }
 
-        // 2. Cria a reserva com garantia de bloqueio de linha
         return tx.booking.create({
-            data: {
-                startTime: start,
-                endTime: end,
-                totalAmount: dto.totalAmount,
-                courtId: dto.courtId,
-                arenaId: dto.arenaId,
-                userId: dto.userId || null,
-                customerName: dto.customerName || null,
-                customerPhone: dto.customerPhone || null,
-            },
+          data: {
+            courtId: court.id,
+            arenaId: court.arenaId, // Garante arenaId legítimo da quadra
+            userId: targetUserId,
+            customerName: !targetUserId ? dto.customerName : null,
+            startTime: start,
+            endTime: end,
+            totalAmount: calculatedTotal, // Calculado estritamente pelo backend
+            status: BookingStatus.CONFIRMED,
+          },
+          include: {
+            court: { select: { id: true, name: true, sport: true } },
+            arena: { select: { id: true, name: true } },
+          },
         });
-        },
-        {
+      },
+      {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        },
+      },
     );
-    }
+  }
 
   async findAll(user: any, filter: BookingFilterDto) {
 

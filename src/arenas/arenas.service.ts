@@ -1,98 +1,266 @@
-import { ConflictException, Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { Prisma, Role, BookingStatus, Sport } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { FirebaseStorageService } from '../storage/storage.service';
 import { CreateArenaRequestDto } from './dto/create-arena-request.dto';
-import { Role } from '@prisma/client';
-import { FindArenasQueryDto } from './dto/find-arenas-query.dto';
 import { FindArenaFollowersQueryDto } from './dto/find-arena-followers-query.dto';
+import { FindArenasQueryDto } from './dto/find-arenas-query.dto';
+import { UpdateArenaDto } from './dto/update-arena.dto';
+import { FindArenaAvailabilityQueryDto } from './dto/find-arena-availability-query.dto';
 
 @Injectable()
 export class ArenasService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storageService: FirebaseStorageService,
+  ) {}
 
-  // Cria a Arena e promove o Atleta para ARENA_ADMIN diretamente
   async becomeArenaAdmin(userId: string, dto: CreateArenaRequestDto) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
     });
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException('Usuário não encontrado.');
     }
 
-    // Verifica se já existe uma arena com o mesmo CNPJ
-    const existingArena = await this.prisma.arena.findUnique({
-      where: { cnpj: dto.cnpj },
-    });
+    const cleanedCnpj = dto.cnpj ? dto.cnpj.replace(/\D/g, '') : null;
 
-    if (existingArena) {
-      throw new ConflictException('An arena with this Tax ID (CNPJ) already exists');
+    if (cleanedCnpj) {
+      const existingArena = await this.prisma.arena.findUnique({
+        where: { cnpj: cleanedCnpj },
+      });
+
+      if (existingArena) {
+        throw new ConflictException('Já existe uma arena cadastrada com este CNPJ.');
+      }
     }
 
-    // Executa em transação: cria a arena e atualiza o usuário em uma única operação atômica
     const result = await this.prisma.$transaction(async (tx) => {
-      const newArena = await this.prisma.arena.create({
+      const newArena = await tx.arena.create({
         data: {
-            name: dto.arenaName,
-            cnpj: dto.cnpj,
-            city: dto.city,
-            state: dto.state,
-            admins: {
-            connect: { id: userId }, // Vincula na relação N:N
-            },
+          name: dto.name,
+          cnpj: cleanedCnpj,
+          address: dto.address,
+          number: dto.number,
+          complement: dto.complement,
+          neighborhood: dto.neighborhood,
+          zipCode: dto.zipCode ? dto.zipCode.replace(/\D/g, '') : null,
+          city: dto.city,
+          state: dto.state.toUpperCase(),
+          isActive: true,
+          admins: {
+            connect: { id: userId },
+          },
         },
-        });
+      });
 
-         const updatedUser = await this.prisma.user.update({
-            where: { id: userId },
-            data: {
-                role: 'ARENA_ADMIN',
-                activeArenaId: newArena.id,
-            },
-            include: {
-                arenasManaged: {
-                select: { id: true, name: true },
-                },
-            },
-        });
+      const updatedUser = await tx.user.update({
+        where: { id: userId },
+        data: {
+          role: Role.ARENA_ADMIN,
+        },
+        include: {
+          arenasManaged: {
+            select: { id: true, name: true },
+          },
+        },
+      });
 
       return { arena: newArena, user: updatedUser };
     });
 
     return {
-      message: 'Arena successfully registered and user promoted to ARENA_ADMIN',
+      message: 'Arena cadastrada com sucesso e usuário promovido a ARENA_ADMIN.',
       arena: result.arena,
       user: {
         id: result.user.id,
         name: result.user.name,
         email: result.user.email,
         role: result.user.role,
-        activeArenaId: result.user.activeArenaId,
-        arenasManaged: result.user.arenasManaged.map((arena) => ({
-          id: arena.id,
-          name: arena.name,
-        }))
+        arenasManaged: result.user.arenasManaged,
       },
     };
   }
 
-  async findAll(query: FindArenasQueryDto) {
+  async updateArena(
+    arenaId: string,
+    user: any,
+    dto: UpdateArenaDto,
+    files?: {
+      logo?: Express.Multer.File[];
+      photos?: Express.Multer.File[];
+    },
+  ) {
+    const arena = await this.prisma.arena.findUnique({
+      where: { id: arenaId },
+      include: { admins: { select: { id: true } } },
+    });
+
+    if (!arena) throw new NotFoundException('Arena não encontrada.');
+
+    const isAdmin = arena.admins.some((a) => a.id === user.id);
+    if (!isAdmin && user.role !== Role.SUPERADMIN) {
+      throw new ForbiddenException('Você não tem permissão para alterar esta arena.');
+    }
+
+    let cleanedCnpj: string | undefined = undefined;
+    if (dto.cnpj) {
+      cleanedCnpj = dto.cnpj.replace(/\D/g, '');
+      const existingCnpj = await this.prisma.arena.findFirst({
+        where: {
+          cnpj: cleanedCnpj,
+          id: { not: arenaId },
+        },
+      });
+      if (existingCnpj) {
+        throw new ConflictException('Este CNPJ já está em uso por outra arena.');
+      }
+    }
+
+    let newLogoUrl: string | undefined = undefined;
+    if (files?.logo?.[0]) {
+      newLogoUrl = await this.storageService.uploadPhoto(
+        files.logo[0],
+        'arenas',
+        arenaId,
+      );
+    }
+
+    const newPhotosUrls: string[] = [];
+    if (files?.photos && files.photos.length > 0) {
+      const currentPhotosCount = arena.photos.length;
+      const incomingCount = files.photos.length;
+
+      if (currentPhotosCount + incomingCount > 10) {
+        throw new BadRequestException(
+          `Limite de fotos excedido! A arena possui ${currentPhotosCount} foto(s) e o limite total é 10.`,
+        );
+      }
+
+      for (const file of files.photos) {
+        const url = await this.storageService.uploadPhoto(
+          file,
+          'arenas',
+          arenaId,
+        );
+        newPhotosUrls.push(url);
+      }
+    }
+
+    const dataToUpdate: Prisma.ArenaUpdateInput = {
+      ...(dto.name && { name: dto.name }),
+      ...(cleanedCnpj && { cnpj: cleanedCnpj }),
+      ...(dto.address !== undefined && { address: dto.address }),
+      ...(dto.number !== undefined && { number: dto.number }),
+      ...(dto.complement !== undefined && { complement: dto.complement }),
+      ...(dto.neighborhood !== undefined && { neighborhood: dto.neighborhood }),
+      ...(dto.zipCode !== undefined && { zipCode: dto.zipCode.replace(/\D/g, '') }),
+      ...(dto.city && { city: dto.city }),
+      ...(dto.state && { state: dto.state.toUpperCase() }),
+      ...(newLogoUrl && { logoUrl: newLogoUrl }),
+      ...(newPhotosUrls.length > 0 && {
+        photos: [...arena.photos, ...newPhotosUrls],
+      }),
+    };
+
+    return this.prisma.arena.update({
+      where: { id: arenaId },
+      data: dataToUpdate,
+      select: {
+        id: true,
+        name: true,
+        cnpj: true,
+        address: true,
+        number: true,
+        complement: true,
+        neighborhood: true,
+        zipCode: true,
+        city: true,
+        state: true,
+        logoUrl: true,
+        photos: true,
+        isActive: true,
+      },
+    });
+  }
+
+  async removeArenaPhoto(arenaId: string, user: any, photoUrl: string) {
+    const arena = await this.prisma.arena.findUnique({
+      where: { id: arenaId },
+      include: { admins: { select: { id: true } } },
+    });
+
+    if (!arena) throw new NotFoundException('Arena não encontrada.');
+
+    const isAdmin = arena.admins.some((a) => a.id === user.id);
+    if (!isAdmin && user.role !== Role.SUPERADMIN) {
+      throw new ForbiddenException('Sem permissão para alterar fotos desta arena.');
+    }
+
+    const updatedPhotos = arena.photos.filter((p) => p !== photoUrl);
+
+    return this.prisma.arena.update({
+      where: { id: arenaId },
+      data: { photos: updatedPhotos },
+      select: { id: true, photos: true },
+    });
+  }
+
+  async toggleStatus(arenaId: string, user: any, isActive?: boolean) {
+    const arena = await this.prisma.arena.findUnique({
+      where: { id: arenaId },
+      include: { admins: { select: { id: true } } },
+    });
+
+    if (!arena) throw new NotFoundException('Arena não encontrada.');
+
+    const isAdmin = arena.admins.some((a) => a.id === user.id);
+    if (!isAdmin && user.role !== Role.SUPERADMIN) {
+      throw new ForbiddenException('Apenas o gestor da arena ou superadmin podem alterar seu status.');
+    }
+
+    const newStatus = isActive !== undefined ? isActive : !arena.isActive;
+
+    const updated = await this.prisma.arena.update({
+      where: { id: arenaId },
+      data: { isActive: newStatus },
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+      },
+    });
+
+    return {
+      message: `Arena ${updated.name} foi ${updated.isActive ? 'ativada' : 'inativada'} com sucesso.`,
+      arena: updated,
+    };
+  }
+
+  async findAll(query: FindArenasQueryDto, currentUserId?: string) {
     const page = Number(query.page) || 1;
     const limit = Number(query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    // Filtro de busca por nome, cidade ou estado
-    const where: Prisma.ArenaWhereInput = query.search
-      ? {
-          OR: [
-            { name: { contains: query.search, mode: 'insensitive' } },
-            { city: { contains: query.search, mode: 'insensitive' } },
-            { state: { contains: query.search, mode: 'insensitive' } },
-          ],
-        }
-      : {};
+    const where: Prisma.ArenaWhereInput = {
+      isActive: true,
+      ...(query.search && {
+        OR: [
+          { name: { contains: query.search, mode: 'insensitive' } },
+          { city: { contains: query.search, mode: 'insensitive' } },
+          { state: { contains: query.search, mode: 'insensitive' } },
+          { neighborhood: { contains: query.search, mode: 'insensitive' } },
+        ],
+      }),
+    };
 
-    // Executa a contagem total e a busca em paralelo para alta performance
     const [total, arenas] = await Promise.all([
       this.prisma.arena.count({ where }),
       this.prisma.arena.findMany({
@@ -104,14 +272,28 @@ export class ArenasService {
           id: true,
           name: true,
           cnpj: true,
+          logoUrl: true,
+          photos: true,
           address: true,
+          number: true,
+          complement: true,
+          neighborhood: true,
+          zipCode: true,
           city: true,
           state: true,
+          isActive: true,
           _count: {
             select: {
               courts: { where: { isActive: true } },
+              followers: true,
             },
           },
+          followers: currentUserId
+            ? {
+                where: { userId: currentUserId },
+                select: { id: true },
+              }
+            : false,
           courts: {
             where: { isActive: true },
             select: {
@@ -120,6 +302,7 @@ export class ArenasService {
               sport: true,
               hourlyRate: true,
               isCovered: true,
+              photos: true,
             },
           },
         },
@@ -133,10 +316,19 @@ export class ArenasService {
         id: arena.id,
         name: arena.name,
         cnpj: arena.cnpj,
+        logoUrl: arena.logoUrl,
+        photos: arena.photos,
         address: arena.address,
+        number: arena.number,
+        complement: arena.complement,
+        neighborhood: arena.neighborhood,
+        zipCode: arena.zipCode,
         city: arena.city,
         state: arena.state,
+        isActive: arena.isActive,
         totalActiveCourts: arena._count.courts,
+        totalFollowers: arena._count.followers,
+        isFollowing: currentUserId ? arena.followers.length > 0 : false,
         courts: arena.courts,
       })),
       meta: {
@@ -150,46 +342,47 @@ export class ArenasService {
     };
   }
 
-    async findById(id: string, currentUserId?: string) {
+  async findById(id: string, currentUserId?: string) {
     const arena = await this.prisma.arena.findUnique({
-        where: { id },
-        include: {
+      where: { id },
+      include: {
         _count: {
-            select: {
+          select: {
             followers: true,
             courts: { where: { isActive: true } },
-            },
+          },
         },
         followers: currentUserId
-            ? {
-                where: { userId: currentUserId },
-                select: { id: true },
+          ? {
+              where: { userId: currentUserId },
+              select: { id: true },
             }
-            : false,
+          : false,
         courts: {
-            where: { isActive: true },
-            select: {
-                id: true,
-                name: true,
-                sport: true,
-                hourlyRate: true,
-                isCovered: true,
-                },
-            },
-            },
-        });
+          where: { isActive: true },
+          select: {
+            id: true,
+            name: true,
+            sport: true,
+            hourlyRate: true,
+            isCovered: true,
+            photos: true,
+          },
+        },
+      },
+    });
 
     if (!arena) {
-        throw new NotFoundException('Arena não encontrada.');
+      throw new NotFoundException('Arena não encontrada.');
     }
 
     return {
-        ...arena,
-        totalFollowers: arena._count.followers,
-        totalActiveCourts: arena._count.courts,
-        isFollowing: currentUserId ? arena.followers.length > 0 : false,
+      ...arena,
+      totalFollowers: arena._count.followers,
+      totalActiveCourts: arena._count.courts,
+      isFollowing: currentUserId ? arena.followers.length > 0 : false,
     };
-    }
+  }
 
   async toggleFollow(userId: string, arenaId: string) {
     const arena = await this.prisma.arena.findUnique({
@@ -211,7 +404,6 @@ export class ArenasService {
     });
 
     if (existingFollow) {
-      // Deixar de seguir
       await this.prisma.arenaFollower.delete({
         where: { id: existingFollow.id },
       });
@@ -221,7 +413,6 @@ export class ArenasService {
         message: `Você deixou de seguir a arena ${arena.name}.`,
       };
     } else {
-      // Começar a seguir
       await this.prisma.arenaFollower.create({
         data: {
           userId,
@@ -248,6 +439,7 @@ export class ArenasService {
             address: true,
             city: true,
             state: true,
+            logoUrl: true,
             _count: {
               select: {
                 followers: true,
@@ -281,100 +473,229 @@ export class ArenasService {
     arenaId: string,
     user: any,
     query: FindArenaFollowersQueryDto,
-    ) {
-    // 1. Checa se a arena existe
+  ) {
     const arena = await this.prisma.arena.findUnique({
-        where: { id: arenaId },
-        select: { id: true, name: true },
+      where: { id: arenaId },
+      select: { id: true, name: true },
     });
 
     if (!arena) {
-        throw new NotFoundException('Arena não encontrada.');
+      throw new NotFoundException('Arena não encontrada.');
     }
 
-    // 2. Validação de Segurança / Posse (anti-IDOR)
     if (user.role !== Role.SUPERADMIN) {
-        const dbUser = await this.prisma.user.findUnique({
+      const dbUser = await this.prisma.user.findUnique({
         where: { id: user.id },
         include: {
-            arenasManaged: { select: { id: true } },
-            arenasEmployed: { select: { id: true } },
+          arenasManaged: { select: { id: true } },
+          arenasEmployed: { select: { id: true } },
         },
-        });
+      });
 
-        const allowedArenaIds = [
+      const allowedArenaIds = [
         ...(dbUser?.arenasManaged.map((a) => a.id) || []),
         ...(dbUser?.arenasEmployed.map((a) => a.id) || []),
-        ];
+      ];
 
-        if (!allowedArenaIds.includes(arenaId)) {
+      if (!allowedArenaIds.includes(arenaId)) {
         throw new ForbiddenException(
-            'Você não tem permissão para visualizar os seguidores desta arena.',
+          'Você não tem permissão para visualizar os seguidores desta arena.',
         );
-        }
+      }
     }
 
-    // 3. Paginação e Filtros
     const page = Number(query.page) || 1;
     const limit = Number(query.limit) || 10;
     const skip = (page - 1) * limit;
 
     const where: Prisma.ArenaFollowerWhereInput = {
-        arenaId,
-        ...(query.search && {
+      arenaId,
+      ...(query.search && {
         user: {
-            OR: [
+          OR: [
             { name: { contains: query.search, mode: 'insensitive' } },
             { email: { contains: query.search, mode: 'insensitive' } },
-            ],
+          ],
         },
-        }),
+      }),
     };
 
     const [total, followers] = await Promise.all([
-        this.prisma.arenaFollower.count({ where }),
-        this.prisma.arenaFollower.findMany({
+      this.prisma.arenaFollower.count({ where }),
+      this.prisma.arenaFollower.findMany({
         where,
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
         include: {
-            user: {
+          user: {
             select: {
-                id: true,
-                name: true,
-                email: true,
-                phone: true,
-                avatarUrl: true,
-                role: true,
-                btRating: true,
-                footvolleyElo: true,
-                createdAt: true,
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+              avatarUrl: true,
+              role: true,
+              btRating: true,
+              footvolleyElo: true,
+              createdAt: true,
             },
-            },
+          },
         },
-        }),
+      }),
     ]);
 
     const totalPages = Math.ceil(total / limit);
 
     return {
-        arena: {
+      arena: {
         id: arena.id,
         name: arena.name,
-        },
-        data: followers.map((item) => ({
+      },
+      data: followers.map((item) => ({
         followedAt: item.createdAt,
         user: item.user,
-        })),
-        meta: {
+      })),
+      meta: {
         total,
         page,
         limit,
         totalPages,
         hasNextPage: page < totalPages,
         hasPreviousPage: page > 1,
-        },
+      },
     };
+  }
+
+  async getAvailability(arenaId: string, query: FindArenaAvailabilityQueryDto) {
+    const arena = await this.prisma.arena.findUnique({
+      where: { id: arenaId },
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        courts: {
+          where: {
+            isActive: true,
+            ...(query.sport && { sport: query.sport }),
+          },
+          select: {
+            id: true,
+            name: true,
+            sport: true,
+            hourlyRate: true,
+            isCovered: true,
+            photos: true,
+          },
+        },
+      },
+    });
+
+    if (!arena) {
+      throw new NotFoundException('Arena não encontrada.');
     }
+
+    if (!arena.isActive) {
+      throw new BadRequestException('Esta arena está temporariamente inativa.');
+    }
+
+    // 1. Delimitar o início e fim do dia consultado (00:00:00 até 23:59:59 em UTC/Local)
+    const targetDate = new Date(query.date);
+    const startOfDay = new Date(targetDate);
+    startOfDay.setUTCHours(0, 0, 0, 0);
+
+    const endOfDay = new Date(targetDate);
+    endOfDay.setUTCHours(23, 59, 59, 999);
+
+    const now = new Date();
+
+    // 2. Buscar agendamentos existentes no dia
+    const bookings = await this.prisma.booking.findMany({
+      where: {
+        arenaId,
+        status: { in: [BookingStatus.CONFIRMED, BookingStatus.COMPLETED] },
+        startTime: { lte: endOfDay },
+        endTime: { gte: startOfDay },
+      },
+      select: {
+        id: true,
+        courtId: true,
+        startTime: true,
+        endTime: true,
+      },
+    });
+
+    const slotMinutes = query.slotDurationMinutes || 60;
+    const openingHour = 6;  // 06:00
+    const closingHour = 23; // 23:00
+
+    // 3. Montar a grade de disponibilidade por quadra
+    const courtsAvailability = arena.courts.map((court) => {
+      const courtBookings = bookings.filter((b) => b.courtId === court.id);
+      
+      // 👇 Declare a tipagem do array aqui
+      const slots: {
+        startTime: string;
+        endTime: string;
+        timeLabel: string;
+        isAvailable: boolean;
+        price: number;
+      }[] = [];
+
+      const slotCursor = new Date(startOfDay);
+      slotCursor.setUTCHours(openingHour, 0, 0, 0);
+
+      const dayEndLimit = new Date(startOfDay);
+      dayEndLimit.setUTCHours(closingHour, 0, 0, 0);
+
+      while (slotCursor.getTime() + slotMinutes * 60000 <= dayEndLimit.getTime()) {
+        const slotStart = new Date(slotCursor);
+        const slotEnd = new Date(slotCursor.getTime() + slotMinutes * 60000);
+
+        // Conflito com agendamento existente
+        const hasConflict = courtBookings.some(
+          (b) => slotStart < b.endTime && slotEnd > b.startTime,
+        );
+
+        // Não permite reservar horários passados de hoje
+        const isPast = slotStart.getTime() <= now.getTime();
+
+        const isAvailable = !hasConflict && !isPast;
+        const hourlyRateNum = Number(court.hourlyRate);
+        const slotPrice = Number(((slotMinutes / 60) * hourlyRateNum).toFixed(2));
+
+        slots.push({
+          startTime: slotStart.toISOString(),
+          endTime: slotEnd.toISOString(),
+          timeLabel: `${String(slotStart.getUTCHours()).padStart(2, '0')}:${String(slotStart.getUTCMinutes()).padStart(2, '0')}`,
+          isAvailable,
+          price: slotPrice,
+        });
+
+        // Avança para o próximo slot
+        slotCursor.setMinutes(slotCursor.getMinutes() + slotMinutes);
+      }
+
+      return {
+        courtId: court.id,
+        courtName: court.name,
+        sport: court.sport,
+        isCovered: court.isCovered,
+        hourlyRate: Number(court.hourlyRate),
+        photos: court.photos,
+        availableSlotsCount: slots.filter((s) => s.isAvailable).length,
+        slots,
+      };
+    });
+
+    return {
+      arena: {
+        id: arena.id,
+        name: arena.name,
+      },
+      date: query.date,
+      slotDurationMinutes: slotMinutes,
+      courts: courtsAvailability,
+    };
+  }
 }

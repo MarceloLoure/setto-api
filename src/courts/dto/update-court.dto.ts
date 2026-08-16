@@ -1,11 +1,12 @@
-import { PartialType } from '@nestjs/swagger';
-import { CreateCourtDto } from './create-court.dto';
+import { ApiPropertyOptional, PartialType } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import { IsBoolean, IsOptional } from 'class-validator';
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { CreateCourtDto } from './create-court.dto';
 
 export class UpdateCourtDto extends PartialType(CreateCourtDto) {
-  @ApiPropertyOptional({ example: true, default: true })
-  @IsBoolean()
+  @ApiPropertyOptional({ example: true, description: 'Status de ativação da quadra' })
   @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
   isActive?: boolean;
 }
