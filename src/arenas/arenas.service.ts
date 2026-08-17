@@ -65,6 +65,7 @@ export class ArenasService {
         where: { id: userId },
         data: {
           role: Role.ARENA_ADMIN,
+          activeArenaId: newArena.id,
         },
         include: {
           arenasManaged: {
@@ -568,12 +569,23 @@ export class ArenasService {
   }
 
   async getAvailability(arenaId: string, query: FindArenaAvailabilityQueryDto) {
+    const targetDate = new Date(query.date);
+    const dayOfWeek = targetDate.getUTCDay();
+
     const arena = await this.prisma.arena.findUnique({
       where: { id: arenaId },
       select: {
         id: true,
         name: true,
         isActive: true,
+        operatingHours: {
+          where: { dayOfWeek },
+        },
+        holidays: {
+          where: {
+            date: new Date(query.date),
+          },
+        },
         courts: {
           where: {
             isActive: true,
@@ -591,16 +603,39 @@ export class ArenasService {
       },
     });
 
-    if (!arena) {
-      throw new NotFoundException('Arena não encontrada.');
+    if (!arena) throw new NotFoundException('Arena não encontrada.');
+    if (!arena.isActive) throw new BadRequestException('Arena temporariamente inativa.');
+
+    // 1. Checagem de Feriado / Dia Fechado
+    if (arena.holidays.length > 0) {
+      return {
+        arena: { id: arena.id, name: arena.name },
+        date: query.date,
+        isClosed: true,
+        reason: arena.holidays[0].description || 'Arena fechada nesta data.',
+        courts: [],
+      };
     }
 
-    if (!arena.isActive) {
-      throw new BadRequestException('Esta arena está temporariamente inativa.');
+    // 2. Checagem do Dia da Semana
+    const schedule = arena.operatingHours[0];
+    if (schedule && !schedule.isOpen) {
+      return {
+        arena: { id: arena.id, name: arena.name },
+        date: query.date,
+        isClosed: true,
+        reason: 'A arena não abre neste dia da semana.',
+        courts: [],
+      };
     }
 
-    // 1. Delimitar o início e fim do dia consultado (00:00:00 até 23:59:59 em UTC/Local)
-    const targetDate = new Date(query.date);
+    // Horários de abertura e fechamento configurados (ou fallback padrão 06:00 - 23:00)
+    const openTimeStr = schedule?.openTime || '06:00';
+    const closeTimeStr = schedule?.closeTime || '23:00';
+
+    const [openHour, openMin] = openTimeStr.split(':').map(Number);
+    const [closeHour, closeMin] = closeTimeStr.split(':').map(Number);
+
     const startOfDay = new Date(targetDate);
     startOfDay.setUTCHours(0, 0, 0, 0);
 
@@ -609,11 +644,11 @@ export class ArenasService {
 
     const now = new Date();
 
-    // 2. Buscar agendamentos existentes no dia
+    // 3. Buscar Agendamentos Concorrentes
     const bookings = await this.prisma.booking.findMany({
       where: {
         arenaId,
-        status: { in: [BookingStatus.CONFIRMED, BookingStatus.COMPLETED] },
+        status: { in: [BookingStatus.CONFIRMED, BookingStatus.PENDING, BookingStatus.RESERVED_LOCAL] },
         startTime: { lte: endOfDay },
         endTime: { gte: startOfDay },
       },
@@ -626,14 +661,9 @@ export class ArenasService {
     });
 
     const slotMinutes = query.slotDurationMinutes || 60;
-    const openingHour = 6;  // 06:00
-    const closingHour = 23; // 23:00
 
-    // 3. Montar a grade de disponibilidade por quadra
     const courtsAvailability = arena.courts.map((court) => {
       const courtBookings = bookings.filter((b) => b.courtId === court.id);
-      
-      // 👇 Declare a tipagem do array aqui
       const slots: {
         startTime: string;
         endTime: string;
@@ -643,23 +673,20 @@ export class ArenasService {
       }[] = [];
 
       const slotCursor = new Date(startOfDay);
-      slotCursor.setUTCHours(openingHour, 0, 0, 0);
+      slotCursor.setUTCHours(openHour, openMin, 0, 0);
 
       const dayEndLimit = new Date(startOfDay);
-      dayEndLimit.setUTCHours(closingHour, 0, 0, 0);
+      dayEndLimit.setUTCHours(closeHour, closeMin, 0, 0);
 
       while (slotCursor.getTime() + slotMinutes * 60000 <= dayEndLimit.getTime()) {
         const slotStart = new Date(slotCursor);
         const slotEnd = new Date(slotCursor.getTime() + slotMinutes * 60000);
 
-        // Conflito com agendamento existente
         const hasConflict = courtBookings.some(
           (b) => slotStart < b.endTime && slotEnd > b.startTime,
         );
 
-        // Não permite reservar horários passados de hoje
         const isPast = slotStart.getTime() <= now.getTime();
-
         const isAvailable = !hasConflict && !isPast;
         const hourlyRateNum = Number(court.hourlyRate);
         const slotPrice = Number(((slotMinutes / 60) * hourlyRateNum).toFixed(2));
@@ -672,7 +699,6 @@ export class ArenasService {
           price: slotPrice,
         });
 
-        // Avança para o próximo slot
         slotCursor.setMinutes(slotCursor.getMinutes() + slotMinutes);
       }
 
@@ -689,11 +715,10 @@ export class ArenasService {
     });
 
     return {
-      arena: {
-        id: arena.id,
-        name: arena.name,
-      },
+      arena: { id: arena.id, name: arena.name },
       date: query.date,
+      isClosed: false,
+      operatingWindow: { openTime: openTimeStr, closeTime: closeTimeStr },
       slotDurationMinutes: slotMinutes,
       courts: courtsAvailability,
     };

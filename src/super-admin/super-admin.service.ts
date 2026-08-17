@@ -1,65 +1,167 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { BookingStatus, Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  AdminPaginationQueryDto,
+  FindUsersAdminQueryDto,
+} from './dto/admin-query.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 
 @Injectable()
 export class SuperAdminService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  // 1. Visão Geral da Plataforma (Dashboard Metrics)
+  // 1. Dashboard Web: Métricas Gerais e Faturamento da Plataforma
   async getSystemOverview() {
-    const [totalUsers, totalArenas, totalCourts, totalBookings] = await Promise.all([
+    const [
+      totalUsers,
+      totalArenas,
+      activeArenas,
+      totalCourts,
+      totalBookings,
+      revenueAggregate,
+    ] = await Promise.all([
       this.prisma.user.count(),
       this.prisma.arena.count(),
-      this.prisma.court.count(),
+      this.prisma.arena.count({ where: { isActive: true } }),
+      this.prisma.court.count({ where: { isActive: true } }),
       this.prisma.booking.count(),
+      this.prisma.booking.aggregate({
+        where: { status: BookingStatus.CONFIRMED },
+        _sum: { totalAmount: true },
+      }),
     ]);
 
     return {
       metrics: {
-        totalUsers,
-        totalArenas,
-        totalCourts,
-        totalBookings,
+        users: { total: totalUsers },
+        arenas: { total: totalArenas, active: activeArenas },
+        courts: { activeTotal: totalCourts },
+        bookings: {
+          total: totalBookings,
+          grossVolume: Number(revenueAggregate._sum.totalAmount || 0),
+        },
       },
     };
   }
 
-  // 2. Listar Todos os Usuários
-  async getAllUsers() {
-    return this.prisma.user.findMany({
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        phone: true,
-        role: true,
-        avatarUrl: true,
-        btRating: true,
-        footvolleyElo: true,
-        activeArenaId: true,
-        arenasManaged: {
-          select: {
-            id: true,
-            name: true,
-          },
+  // 2. Painel de Usuários com Paginação e Busca
+  async getAllUsers(query: FindUsersAdminQueryDto) {
+    const page = Number(query.page) || 1;
+    const limit = Number(query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.UserWhereInput = {
+      ...(query.role && { role: query.role }),
+      ...(query.search && {
+        OR: [
+          { name: { contains: query.search, mode: 'insensitive' } },
+          { email: { contains: query.search, mode: 'insensitive' } },
+          { phone: { contains: query.search } },
+          { cpf: { contains: query.search.replace(/\D/g, '') } },
+        ],
+      }),
+    };
+
+    const [total, users] = await Promise.all([
+      this.prisma.user.count({ where }),
+      this.prisma.user.findMany({
+        where,
+        skip,
+        take: limit,
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+          cpf: true,
+          role: true,
+          avatarUrl: true,
+          city: true,
+          state: true,
+          activeArenaId: true,
+          arenasManaged: { select: { id: true, name: true } },
+          arenasEmployed: { select: { id: true, name: true } },
+          createdAt: true,
         },
-        createdAt: true,
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+
+    return {
+      data: users,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
       },
-      orderBy: { createdAt: 'desc' },
-    });
+    };
   }
 
-  // 3. Alterar Role/Arena de Qualquer Usuário
+  // 3. Moderação de Arenas com Contadores e Donos
+  async getAllArenas(query: AdminPaginationQueryDto) {
+    const page = Number(query.page) || 1;
+    const limit = Number(query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.ArenaWhereInput = {
+      ...(query.search && {
+        OR: [
+          { name: { contains: query.search, mode: 'insensitive' } },
+          { cnpj: { contains: query.search.replace(/\D/g, '') } },
+          { city: { contains: query.search, mode: 'insensitive' } },
+          { state: { contains: query.search, mode: 'insensitive' } },
+        ],
+      }),
+    };
+
+    const [total, arenas] = await Promise.all([
+      this.prisma.arena.count({ where }),
+      this.prisma.arena.findMany({
+        where,
+        skip,
+        take: limit,
+        include: {
+          admins: {
+            select: { id: true, name: true, email: true, phone: true },
+          },
+          _count: {
+            select: {
+              courts: true,
+              bookings: true,
+              followers: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+
+    return {
+      data: arenas,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  // 4. Alterar Role e Vínculo de Arena
   async updateUserRole(userId: string, dto: UpdateUserRoleDto) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException('Usuário não encontrado.');
     }
 
-    // Se um arenaId for informado no DTO, conecta o usuário a essa arena na relação N:N
-    const updateData: any = {
+    const updateData: Prisma.UserUpdateInput = {
       role: dto.role,
     };
 
@@ -78,87 +180,63 @@ export class SuperAdminService {
         name: true,
         email: true,
         role: true,
-        avatarUrl: true,
         activeArenaId: true,
-        arenasManaged: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
+        arenasManaged: { select: { id: true, name: true } },
       },
     });
 
     return {
-      message: 'User role updated successfully',
+      message: 'Permissões do usuário atualizadas com sucesso.',
       user: updatedUser,
     };
   }
 
-  // 4. Listar Todas as Arenas Cadastradas
-  async getAllArenas() {
-    return this.prisma.arena.findMany({
-      include: {
-        courts: {
-          select: {
-            id: true,
-            name: true,
-          },
+  // 5. Histórico Global de Agendamentos / Auditoria Financeira
+  async getAllBookings(query: AdminPaginationQueryDto) {
+    const page = Number(query.page) || 1;
+    const limit = Number(query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const [total, bookings] = await Promise.all([
+      this.prisma.booking.count(),
+      this.prisma.booking.findMany({
+        skip,
+        take: limit,
+        include: {
+          user: { select: { id: true, name: true, email: true, phone: true } },
+          arena: { select: { id: true, name: true } },
+          court: { select: { id: true, name: true, sport: true } },
+          payment: { select: { id: true, status: true, method: true, amount: true } },
         },
-        _count: {
-          select: {
-            courts: true,
-            bookings: true,
-          },
-        },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+
+    return {
+      data: bookings,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
       },
-      orderBy: { createdAt: 'desc' },
-    });
+    };
   }
 
-  // 5. Listar Todas as Quadras do Sistema
-  async getAllCourts() {
-    return this.prisma.court.findMany({
-      include: {
-        arena: {
-          select: {
-            name: true,
-            city: true,
-          },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-  }
+  // 6. Deletar Usuário (Ação Destrutiva Master)
+  async deleteUser(userId: string, currentSuperAdminId: string) {
+    if (userId === currentSuperAdminId) {
+      throw new BadRequestException('Você não pode excluir sua própria conta de SuperAdmin.');
+    }
 
-  // 6. Listar Todos os Agendamentos/Reservas da Plataforma
-  async getAllBookings() {
-    return this.prisma.booking.findMany({
-      include: {
-        user: {
-          select: { name: true, email: true },
-        },
-        arena: {
-          select: { name: true },
-        },
-        court: {
-          select: { name: true, sport: true },
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-  }
-
-  // 7. Deletar Usuário (Ação de Limpeza Master)
-  async deleteUser(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException('Usuário não encontrado.');
     }
 
     await this.prisma.user.delete({ where: { id: userId } });
 
-    return { message: `User ${userId} deleted successfully` };
+    return { message: `Usuário ${user.name} removido permanentemente do sistema.` };
   }
 }

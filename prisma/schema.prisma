@@ -36,6 +36,8 @@ enum BookingStatus {
   CANCELLED
   COMPLETED
   PENDING
+  RESERVED_LOCAL
+  NO_SHOW
 }
 
 enum InviteStatus {
@@ -70,6 +72,20 @@ enum PaymentStatus {
   COMPLETED
   PENDING
   REFUNDED
+}
+
+enum BookingType {
+  FREE_PLAY         // Locação Avulsa / ForFun
+  SINGLE_LESSON     // Aula Livre (1 atleta ou avulso)
+  GROUP_LESSON      // Aula Coletiva com Professor (múltiplos alunos pagando individualmente)
+  RECURRING_LESSON  // Aula Fixa Semanal
+  TOURNAMENT        // Campeonato / Evento (bloqueio de quadra em lote)
+}
+
+enum ParticipantStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
 }
 
 model User {
@@ -115,6 +131,9 @@ model User {
 
   paymentsCreated Payment[] @relation("PaymentsCreated")
 
+  coachBookings Booking[] @relation("CoachBookings")
+  participations BookingParticipant[]
+
   @@map("users")
 }
 
@@ -135,6 +154,9 @@ model Arena {
 
   logoUrl     String? 
   photos      String[]    @default([]) 
+
+  operatingHours ArenaOperatingHour[]
+  holidays       ArenaHoliday[]
   
   courts      Court[]
   bookings    Booking[]
@@ -193,30 +215,59 @@ model Court {
 }
 
 model Booking {
-  id          String        @id @default(uuid())
-  startTime   DateTime
-  endTime     DateTime
-  totalAmount Decimal       @db.Decimal(10, 2)
-  status      BookingStatus @default(CONFIRMED)
+  id               String            @id @default(uuid())
+  type             BookingType       @default(FREE_PLAY)
+  status           BookingStatus     @default(PENDING)
+  
+  courtId          String
+  arenaId          String
+  userId           String?           // Quem criou ou atleta principal
+  customerName     String?           // Nome caso criado no balcão sem cadastro
+  coachId          String?           // Professor responsável (se for aula)
 
-  customerName  String?
-  customerPhone String?
+  startTime        DateTime
+  endTime          DateTime
   
-  courtId     String
-  court       Court         @relation(fields: [courtId], references: [id], onDelete: Cascade)
-  
+  totalAmount      Decimal           @db.Decimal(10, 2)
+  pricePerPlayer   Decimal?          @db.Decimal(10, 2) // Preço individual se for GROUP_LESSON
+  maxPlayers       Int?              // Limite de vagas na aula
+
+  // Recorrência para Aula Fixa
+  isRecurring      Boolean           @default(false)
+  recurringGroupId String?           // Agrupa todas as semanas da mesma aula fixa
+  recurrenceEnd    DateTime?
+
+  // Campeonatos e Eventos
+  tournamentName   String?
+  notes            String?
+
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  court            Court             @relation(fields: [courtId], references: [id])
+  arena            Arena             @relation(fields: [arenaId], references: [id])
+  user             User?             @relation(fields: [userId], references: [id])
+  coach            User?             @relation("CoachBookings", fields: [coachId], references: [id])
+  participants     BookingParticipant[]
+  payment          Payment?
+
+  @@index([courtId, startTime, endTime])
+  @@index([arenaId, startTime])
+}
+
+model BookingParticipant {
+  id          String            @id @default(uuid())
+  bookingId   String
   userId      String?
-  user          User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
-  
-  arenaId     String
-  arena       Arena         @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  guestName   String?           // Atleta avulso de balcão
+  pricePaid   Decimal           @db.Decimal(10, 2)
+  status      ParticipantStatus @default(PENDING)
+  createdAt   DateTime          @default(now())
 
-  payment Payment?
+  booking     Booking           @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  user        User?             @relation(fields: [userId], references: [id])
 
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-
-  @@map("bookings")
+  @@unique([bookingId, userId])
 }
 
 model StaffInvite {
@@ -281,4 +332,31 @@ model ArenaFollower {
 
   @@unique([userId, arenaId])
   @@map("arena_followers")
+}
+
+model ArenaOperatingHour {
+  id        String   @id @default(uuid())
+  arenaId   String
+  dayOfWeek Int      // 0 = Domingo, 1 = Segunda, ..., 6 = Sábado
+  openTime  String   // Formato "HH:mm", ex: "06:00"
+  closeTime String   // Formato "HH:mm", ex: "23:00"
+  isOpen    Boolean  @default(true) // false = Não abre neste dia da semana
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  arena Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  @@unique([arenaId, dayOfWeek])
+}
+
+model ArenaHoliday {
+  id          String   @id @default(uuid())
+  arenaId     String
+  date        DateTime @db.Date // Data específica sem agendamento (ex: 2026-12-25)
+  description String?  // Ex: "Natal", "Manutenção Geral"
+  createdAt   DateTime @default(now())
+
+  arena Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  @@unique([arenaId, date])
 }
