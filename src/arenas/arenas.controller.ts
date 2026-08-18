@@ -71,9 +71,12 @@ export class ArenasController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Buscar detalhes de uma arena por ID (Público)' })
-  findById(@Param('id') id: string) {
-    return this.arenasService.findById(id);
+  @ApiOperation({ summary: 'Buscar detalhes de uma arena por ID' })
+  findById(
+    @Param('id') id: string,
+    @CurrentUser('id') userId?: string,
+  ) {
+    return this.arenasService.findById(id, userId);
   }
 
   @Post(':id/toggle-follow')
@@ -114,6 +117,7 @@ export class ArenasController {
     FileFieldsInterceptor(
       [
         { name: 'logo', maxCount: 1 },
+        { name: 'cover', maxCount: 1 },
         { name: 'photos', maxCount: 10 },
       ],
       {
@@ -131,6 +135,7 @@ export class ArenasController {
       type: 'object',
       properties: {
         logo: { type: 'string', format: 'binary', description: 'Nova Logo (opcional)' },
+        cover: { type: 'string', format: 'binary', description: 'Foto de capa (1 imagem)' },
         photos: {
           type: 'array',
           items: { type: 'string', format: 'binary' },
@@ -156,6 +161,7 @@ export class ArenasController {
     @UploadedFiles()
     files?: {
       logo?: Express.Multer.File[];
+      cover?: Express.Multer.File[];
       photos?: Express.Multer.File[];
     },
   ) {

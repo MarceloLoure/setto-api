@@ -20,7 +20,7 @@ export class StaffService {
         id: true,
         name: true,
         email: true,
-        avatarUrl: true,
+        avatar: true,
         role: true,
       },
     });

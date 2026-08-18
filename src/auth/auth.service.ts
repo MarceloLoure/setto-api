@@ -38,6 +38,7 @@ export class AuthService {
         role: 'ATHLETE',
       },
       include: {
+        avatar: { select: { id: true, name: true, path: true } },
         arenasManaged: {
           select: { id: true, name: true, courts: { select: { id: true, name: true, sport: true } } },
         },
@@ -53,6 +54,7 @@ export class AuthService {
         name: user.name,
         email: user.email,
         role: user.role,
+        avatar: user.avatar,
         arenas: user.arenasManaged,
       },
     };
@@ -68,6 +70,7 @@ export class AuthService {
     let user = await this.prisma.user.findFirst({
       where: providerField,
       include: {
+        avatar: { select: { id: true, name: true, path: true } },
         arenasManaged: {
           select: { id: true, name: true, courts: { select: { id: true, name: true, sport: true } } },
         },
@@ -79,6 +82,7 @@ export class AuthService {
       user = await this.prisma.user.findUnique({
         where: { email },
         include: {
+          avatar: { select: { id: true, name: true, path: true } },
           arenasManaged: {
             select: { id: true, name: true, courts: { select: { id: true, name: true, sport: true } } },
           },
@@ -90,9 +94,18 @@ export class AuthService {
           where: { id: user.id },
           data: {
             ...providerField,
-            avatarUrl: user.avatarUrl || avatarUrl,
+            ...(avatarUrl &&
+              !user.avatar && {
+                avatar: {
+                  create: {
+                    name: 'oauth-avatar.jpg',
+                    path: avatarUrl,
+                  },
+                },
+            }),
           },
           include: {
+            avatar: { select: { id: true, name: true, path: true } },
             arenasManaged: {
               select: { id: true, name: true, courts: { select: { id: true, name: true, sport: true } } },
             },
@@ -107,11 +120,19 @@ export class AuthService {
         data: {
           name,
           email,
-          avatarUrl,
           ...providerField,
           role: 'ATHLETE',
+          ...(avatarUrl && {
+            avatar: {
+              create: {
+                name: 'oauth-avatar.jpg',
+                path: avatarUrl,
+              },
+            },
+          }),
         },
         include: {
+          avatar: { select: { id: true, name: true, path: true } },
           arenasManaged: {
             select: { id: true, name: true, courts: { select: { id: true, name: true, sport: true } } },
           },
@@ -128,7 +149,7 @@ export class AuthService {
         name: user.name,
         email: user.email,
         role: user.role,
-        avatarUrl: user.avatarUrl,
+        avatar: user.avatar,
         arenas: user.arenasManaged,
       },
     };
@@ -148,23 +169,32 @@ export class AuthService {
     let user = await this.prisma.user.findUnique({
         where: { email },
         include: {
-        arenasManaged: { select: { id: true, name: true } },
+          avatar: { select: { id: true, name: true, path: true } },
+          arenasManaged: { select: { id: true, name: true } },
         },
     });
 
     if (!user) {
-        user = await this.prisma.user.create({
+      user = await this.prisma.user.create({
         data: {
-            email,
-            name: name || 'Atleta',
-            avatarUrl: picture || null,
-            googleId: uid,
-            role: 'ATHLETE',
+          email,
+          name: name || 'Atleta',
+          googleId: uid,
+          role: "ATHLETE",
+          ...(picture && {
+            avatar: {
+              create: {
+                name: 'firebase-avatar.jpg',
+                path: picture,
+              },
+            },
+          }),
         },
         include: {
-            arenasManaged: { select: { id: true, name: true } },
+          avatar: { select: { id: true, name: true, path: true } },
+          arenasManaged: { select: { id: true, name: true } },
         },
-        });
+      });
     }
 
     // 3. Emite o JWT padrão da sua API
@@ -177,7 +207,7 @@ export class AuthService {
         name: user.name,
         email: user.email,
         role: user.role,
-        avatarUrl: user.avatarUrl,
+        avatar: user.avatar,
         arenas: user.arenasManaged,
         },
     };
@@ -189,6 +219,7 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { email },
       include: {
+        avatar: { select: { id: true, name: true, path: true } },
         arenasManaged: {
           select: {
             id: true,
@@ -226,7 +257,7 @@ export class AuthService {
         name: user.name,
         email: user.email,
         role: user.role,
-        avatarUrl: user.avatarUrl,
+        avatar: user.avatar,
         arenas: user.arenasManaged,
       },
     };

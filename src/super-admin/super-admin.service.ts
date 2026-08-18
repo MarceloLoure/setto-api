@@ -80,7 +80,7 @@ export class SuperAdminService {
           phone: true,
           cpf: true,
           role: true,
-          avatarUrl: true,
+          avatar: true,
           city: true,
           state: true,
           activeArenaId: true,

@@ -101,8 +101,8 @@ model User {
   city          String?
   state         String?
 
-  avatarUrl    String?
-  coverUrl     String?
+  avatar    File?    @relation("UserAvatar")
+  cover     File?    @relation("UserCover")
   role         Role          @default(ATHLETE)
   btRating     Float         @default(1000.0) // Beach Tennis Rating
   footvolleyElo Float        @default(1000.0) // Footvolley Elo
@@ -152,8 +152,9 @@ model Arena {
 
   isActive     Boolean       @default(true)
 
-  logoUrl     String? 
-  photos      String[]    @default([]) 
+  logo      File?    @relation("ArenaLogo")
+  cover     File?    @relation("ArenaCover")
+  photos    File[]   @relation("ArenaGallery")
 
   operatingHours ArenaOperatingHour[]
   holidays       ArenaHoliday[]
@@ -202,7 +203,7 @@ model Court {
   isCovered   Boolean       @default(false)
   isActive    Boolean       @default(true)
 
-  photos      String[]  @default([])
+  photos    File[]   @relation("CourtGallery")
   
   arenaId     String
   arena       Arena         @relation(fields: [arenaId], references: [id], onDelete: Cascade)
@@ -359,4 +360,38 @@ model ArenaHoliday {
   arena Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
 
   @@unique([arenaId, date])
+}
+
+model File {
+  id        String    @id @default(uuid())
+  name      String    // Nome original do arquivo (ex: "foto-quadra-1.png")
+  path      String    // URL pública do Firebase Storage
+  mimeType  String?   // Ex: "image/webp", "image/png"
+  sizeBytes Int?      // Tamanho do arquivo em bytes
+  isActive  Boolean   @default(true)
+  deletedAt DateTime? // Suporte a soft delete
+
+  // Relações Opcionais
+  userIdAvatar String?   @unique
+  userAvatar   User?     @relation("UserAvatar", fields: [userIdAvatar], references: [id], onDelete: Cascade)
+
+  userIdCover  String?   @unique
+  userCover    User?     @relation("UserCover", fields: [userIdCover], references: [id], onDelete: Cascade)
+
+  arenaIdLogo  String?   @unique
+  arenaLogo    Arena?    @relation("ArenaLogo", fields: [arenaIdLogo], references: [id], onDelete: Cascade)
+
+  arenaIdCover String?   @unique
+  arenaCover   Arena?    @relation("ArenaCover", fields: [arenaIdCover], references: [id], onDelete: Cascade)
+
+  arenaGalleryId String?
+  arenaGallery   Arena?  @relation("ArenaGallery", fields: [arenaGalleryId], references: [id], onDelete: Cascade)
+
+  courtGalleryId String?
+  courtGallery   Court?  @relation("CourtGallery", fields: [courtGalleryId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("files")
 }

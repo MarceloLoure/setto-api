@@ -28,8 +28,8 @@ export class UsersService {
         birthDate: true,
         city: true,
         state: true,
-        avatarUrl: true,
-        coverUrl: true,
+        avatar: true,
+        cover: true,
         bio: true,
         role: true,
         btRating: true,
@@ -53,6 +53,10 @@ export class UsersService {
   ) {
     const currentUser = await this.prisma.user.findUnique({
       where: { id: userId },
+      include: {
+        avatar: true,
+        cover: true,
+      },
     });
 
     if (!currentUser) {
@@ -80,7 +84,7 @@ export class UsersService {
       }
     }
 
-    const [avatarUrl, coverUrl] = await Promise.all([
+    const [newAvatar, newCover] = await Promise.all([
       files?.avatar?.[0]
         ? this.storageService.uploadPhoto(files.avatar[0], 'avatars', userId)
         : undefined,
@@ -89,20 +93,63 @@ export class UsersService {
         : undefined,
     ]);
 
-    // 3. Montagem do payload de atualização do Prisma
-    const dataToUpdate: Prisma.UserUpdateInput = {
-      name: dto.name,
-      phone: dto.phone,
-      bio: dto.bio,
-      gender: dto.gender,
-      city: dto.city,
-      state: dto.state,
-      birthDate: dto.birthDate ? new Date(dto.birthDate) : undefined,
-    };
+    // Limpa a foto antiga do bucket se uma nova foi enviada
+    if (newAvatar && currentUser.avatar?.path) {
+      await this.storageService.deletePhotoByUrl(currentUser.avatar.path);
+    }
 
-    if (cleanedCpf) dataToUpdate.cpf = cleanedCpf;
-    if (avatarUrl) dataToUpdate.avatarUrl = avatarUrl;
-    if (coverUrl) dataToUpdate.coverUrl = coverUrl;
+    if (newCover && currentUser.cover?.path) {
+      await this.storageService.deletePhotoByUrl(currentUser.cover.path);
+    }
+
+    const dataToUpdate: Prisma.UserUpdateInput = {
+      ...(dto.name && { name: dto.name }),
+      ...(dto.phone !== undefined && { phone: dto.phone }),
+      ...(dto.bio !== undefined && { bio: dto.bio }),
+      ...(dto.gender !== undefined && { gender: dto.gender }),
+      ...(dto.city !== undefined && { city: dto.city }),
+      ...(dto.state !== undefined && { state: dto.state }),
+      ...(dto.birthDate && { birthDate: new Date(dto.birthDate) }),
+      ...(cleanedCpf && { cpf: cleanedCpf }),
+
+      ...(newAvatar && {
+        avatar: {
+          upsert: {
+            create: {
+              name: newAvatar.name,
+              path: newAvatar.path,
+              mimeType: newAvatar.mimeType,
+              sizeBytes: newAvatar.sizeBytes,
+            },
+            update: {
+              name: newAvatar.name,
+              path: newAvatar.path,
+              mimeType: newAvatar.mimeType,
+              sizeBytes: newAvatar.sizeBytes,
+            },
+          },
+        },
+      }),
+
+      ...(newCover && {
+        cover: {
+          upsert: {
+            create: {
+              name: newCover.name,
+              path: newCover.path,
+              mimeType: newCover.mimeType,
+              sizeBytes: newCover.sizeBytes,
+            },
+            update: {
+              name: newCover.name,
+              path: newCover.path,
+              mimeType: newCover.mimeType,
+              sizeBytes: newCover.sizeBytes,
+            },
+          },
+        },
+      }),
+    };
 
     return this.prisma.user.update({
       where: { id: userId },
@@ -117,12 +164,16 @@ export class UsersService {
         birthDate: true,
         city: true,
         state: true,
-        avatarUrl: true,
-        coverUrl: true,
         bio: true,
         role: true,
         btRating: true,
         footvolleyElo: true,
+        avatar: {
+          select: { id: true, name: true, path: true },
+        },
+        cover: {
+          select: { id: true, name: true, path: true },
+        },
       },
     });
   }

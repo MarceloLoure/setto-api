@@ -13,6 +13,7 @@ import { FindArenaFollowersQueryDto } from './dto/find-arena-followers-query.dto
 import { FindArenasQueryDto } from './dto/find-arenas-query.dto';
 import { UpdateArenaDto } from './dto/update-arena.dto';
 import { FindArenaAvailabilityQueryDto } from './dto/find-arena-availability-query.dto';
+import { UpdateOperatingHoursDto } from './dto/update-operating-hours.dto';
 
 @Injectable()
 export class ArenasService {
@@ -96,12 +97,18 @@ export class ArenasService {
     dto: UpdateArenaDto,
     files?: {
       logo?: Express.Multer.File[];
+      cover?: Express.Multer.File[];
       photos?: Express.Multer.File[];
     },
   ) {
     const arena = await this.prisma.arena.findUnique({
       where: { id: arenaId },
-      include: { admins: { select: { id: true } } },
+      include: {
+        admins: { select: { id: true } },
+        logo: true,
+        cover: true,
+        photos: { where: { isActive: true } },
+      },
     });
 
     if (!arena) throw new NotFoundException('Arena não encontrada.');
@@ -125,77 +132,149 @@ export class ArenasService {
       }
     }
 
-    let newLogoUrl: string | undefined = undefined;
-    if (files?.logo?.[0]) {
-      newLogoUrl = await this.storageService.uploadPhoto(
-        files.logo[0],
-        'arenas',
-        arenaId,
-      );
+    const [newLogo, newCover] = await Promise.all([
+      files?.logo?.[0]
+        ? this.storageService.uploadPhoto(files.logo[0], 'arenas/logos', arenaId)
+        : undefined,
+      files?.cover?.[0]
+        ? this.storageService.uploadPhoto(files.cover[0], 'arenas/covers', arenaId)
+        : undefined,
+    ]);
+
+    if (newLogo && arena.logo?.path) {
+      await this.storageService.deletePhotoByUrl(arena.logo.path);
     }
 
-    const newPhotosUrls: string[] = [];
-    if (files?.photos && files.photos.length > 0) {
-      const currentPhotosCount = arena.photos.length;
-      const incomingCount = files.photos.length;
-
-      if (currentPhotosCount + incomingCount > 10) {
-        throw new BadRequestException(
-          `Limite de fotos excedido! A arena possui ${currentPhotosCount} foto(s) e o limite total é 10.`,
-        );
-      }
-
-      for (const file of files.photos) {
-        const url = await this.storageService.uploadPhoto(
-          file,
-          'arenas',
-          arenaId,
-        );
-        newPhotosUrls.push(url);
-      }
+    if (newCover && arena.cover?.path) {
+      await this.storageService.deletePhotoByUrl(arena.cover.path);
     }
+    
+    const newPhotosData: { name: string; path: string; mimeType: string; sizeBytes: number }[] = [];
 
-    const dataToUpdate: Prisma.ArenaUpdateInput = {
-      ...(dto.name && { name: dto.name }),
-      ...(cleanedCnpj && { cnpj: cleanedCnpj }),
-      ...(dto.address !== undefined && { address: dto.address }),
-      ...(dto.number !== undefined && { number: dto.number }),
-      ...(dto.complement !== undefined && { complement: dto.complement }),
-      ...(dto.neighborhood !== undefined && { neighborhood: dto.neighborhood }),
-      ...(dto.zipCode !== undefined && { zipCode: dto.zipCode.replace(/\D/g, '') }),
-      ...(dto.city && { city: dto.city }),
-      ...(dto.state && { state: dto.state.toUpperCase() }),
-      ...(newLogoUrl && { logoUrl: newLogoUrl }),
-      ...(newPhotosUrls.length > 0 && {
-        photos: [...arena.photos, ...newPhotosUrls],
-      }),
-    };
+      if (files?.photos && files.photos.length > 0) {
+        const currentCount = arena.photos.length;
+        const incomingCount = files.photos.length;
 
-    return this.prisma.arena.update({
-      where: { id: arenaId },
-      data: dataToUpdate,
-      select: {
-        id: true,
-        name: true,
-        cnpj: true,
-        address: true,
-        number: true,
-        complement: true,
-        neighborhood: true,
-        zipCode: true,
-        city: true,
-        state: true,
-        logoUrl: true,
-        photos: true,
-        isActive: true,
-      },
-    });
-  }
+        if (currentCount + incomingCount > 3) {
+          throw new BadRequestException(
+            `Limite de fotos excedido! Esta arena já tem ${currentCount} foto(s) ativa(s) e o limite máximo é 3.`,
+          );
+        }
+
+        for (const file of files.photos) {
+          const uploaded = await this.storageService.uploadPhoto(
+            file,
+            'arenas/photos',
+            arenaId,
+          );
+          newPhotosData.push({
+            name: uploaded.name,
+            path: uploaded.path,
+            mimeType: uploaded.mimeType,
+            sizeBytes: uploaded.sizeBytes,
+          });
+        }
+      }
+
+      // 5. Montagem Dinâmica de Atualização com Relações Aninhadas
+      const dataToUpdate: Prisma.ArenaUpdateInput = {
+        ...(dto.name && { name: dto.name }),
+        ...(cleanedCnpj && { cnpj: cleanedCnpj }),
+        ...(dto.address !== undefined && { address: dto.address }),
+        ...(dto.number !== undefined && { number: dto.number }),
+        ...(dto.complement !== undefined && { complement: dto.complement }),
+        ...(dto.neighborhood !== undefined && { neighborhood: dto.neighborhood }),
+        ...(dto.zipCode !== undefined && { zipCode: dto.zipCode.replace(/\D/g, '') }),
+        ...(dto.city && { city: dto.city }),
+        ...(dto.state && { state: dto.state.toUpperCase() }),
+
+        // Upsert da Logo (cria novo registro ou atualiza o existente)
+        ...(newLogo && {
+          logo: {
+            upsert: {
+              create: {
+                name: newLogo.name,
+                path: newLogo.path,
+                mimeType: newLogo.mimeType,
+                sizeBytes: newLogo.sizeBytes,
+              },
+              update: {
+                name: newLogo.name,
+                path: newLogo.path,
+                mimeType: newLogo.mimeType,
+                sizeBytes: newLogo.sizeBytes,
+              },
+            },
+          },
+        }),
+
+        // Upsert da Capa
+        ...(newCover && {
+          cover: {
+            upsert: {
+              create: {
+                name: newCover.name,
+                path: newCover.path,
+                mimeType: newCover.mimeType,
+                sizeBytes: newCover.sizeBytes,
+              },
+              update: {
+                name: newCover.name,
+                path: newCover.path,
+                mimeType: newCover.mimeType,
+                sizeBytes: newCover.sizeBytes,
+              },
+            },
+          },
+        }),
+
+        // Inserção das novas fotos na galeria
+        ...(newPhotosData.length > 0 && {
+          photos: {
+            create: newPhotosData,
+          },
+        }),
+      };
+
+      // 6. Executa a atualização e retorna o objeto File completo
+      return this.prisma.arena.update({
+        where: { id: arenaId },
+        data: dataToUpdate,
+        select: {
+          id: true,
+          name: true,
+          cnpj: true,
+          address: true,
+          number: true,
+          complement: true,
+          neighborhood: true,
+          zipCode: true,
+          city: true,
+          state: true,
+          isActive: true,
+          logo: {
+            select: { id: true, name: true, path: true },
+          },
+          cover: {
+            select: { id: true, name: true, path: true },
+          },
+          photos: {
+            where: { isActive: true },
+            select: { id: true, name: true, path: true, createdAt: true },
+          },
+        },
+      });
+    }
 
   async removeArenaPhoto(arenaId: string, user: any, photoUrl: string) {
     const arena = await this.prisma.arena.findUnique({
       where: { id: arenaId },
-      include: { admins: { select: { id: true } } },
+      include: {
+        admins: { select: { id: true } },
+        photos: {
+          select: { id: true, path: true },
+        },
+      },
     });
 
     if (!arena) throw new NotFoundException('Arena não encontrada.');
@@ -205,12 +284,21 @@ export class ArenasService {
       throw new ForbiddenException('Sem permissão para alterar fotos desta arena.');
     }
 
-    const updatedPhotos = arena.photos.filter((p) => p !== photoUrl);
+    const remainingPhotos = arena.photos.filter((photo) => photo.path !== photoUrl);
 
     return this.prisma.arena.update({
       where: { id: arenaId },
-      data: { photos: updatedPhotos },
-      select: { id: true, photos: true },
+      data: {
+        photos: {
+          set: remainingPhotos.map((photo) => ({ id: photo.id })),
+        },
+      },
+      select: {
+        id: true,
+        photos: {
+          select: { id: true, path: true },
+        },
+      },
     });
   }
 
@@ -273,7 +361,7 @@ export class ArenasService {
           id: true,
           name: true,
           cnpj: true,
-          logoUrl: true,
+          logo: true,
           photos: true,
           address: true,
           number: true,
@@ -317,7 +405,7 @@ export class ArenasService {
         id: arena.id,
         name: arena.name,
         cnpj: arena.cnpj,
-        logoUrl: arena.logoUrl,
+        logo: arena.logo,
         photos: arena.photos,
         address: arena.address,
         number: arena.number,
@@ -343,32 +431,16 @@ export class ArenasService {
     };
   }
 
-  async findById(id: string, currentUserId?: string) {
+  async findById(arenaId: string, currentUserId?: string) {
     const arena = await this.prisma.arena.findUnique({
-      where: { id },
+      where: { id: arenaId },
       include: {
-        _count: {
-          select: {
-            followers: true,
-            courts: { where: { isActive: true } },
-          },
-        },
-        followers: currentUserId
-          ? {
-              where: { userId: currentUserId },
-              select: { id: true },
-            }
-          : false,
         courts: {
           where: { isActive: true },
-          select: {
-            id: true,
-            name: true,
-            sport: true,
-            hourlyRate: true,
-            isCovered: true,
-            photos: true,
-          },
+          select: { id: true, name: true, sport: true },
+        },
+        _count: {
+          select: { followers: true },
         },
       },
     });
@@ -377,11 +449,22 @@ export class ArenasService {
       throw new NotFoundException('Arena não encontrada.');
     }
 
+    let isFollowing = false;
+    if (currentUserId) {
+      const followRecord = await this.prisma.arenaFollower.findUnique({
+        where: {
+          userId_arenaId: {
+            userId: currentUserId,
+            arenaId: arenaId,
+          },
+        },
+      });
+      isFollowing = !!followRecord;
+    }
+
     return {
       ...arena,
-      totalFollowers: arena._count.followers,
-      totalActiveCourts: arena._count.courts,
-      isFollowing: currentUserId ? arena.followers.length > 0 : false,
+      isFollowing,
     };
   }
 
@@ -440,7 +523,7 @@ export class ArenasService {
             address: true,
             city: true,
             state: true,
-            logoUrl: true,
+            logo: true,
             _count: {
               select: {
                 followers: true,
@@ -535,7 +618,7 @@ export class ArenasService {
               name: true,
               email: true,
               phone: true,
-              avatarUrl: true,
+              avatar: true,
               role: true,
               btRating: true,
               footvolleyElo: true,
@@ -722,5 +805,69 @@ export class ArenasService {
       slotDurationMinutes: slotMinutes,
       courts: courtsAvailability,
     };
+  }
+
+  // 1. Atualizar ou Criar Grade Semanal de Horários
+  async updateOperatingHours(arenaId: string, user: any, dto: UpdateOperatingHoursDto) {
+    await this.validateArenaManagementPermission(arenaId, user);
+
+    const operations = dto.schedules.map((schedule) =>
+      this.prisma.arenaOperatingHour.upsert({
+        where: {
+          arenaId_dayOfWeek: {
+            arenaId,
+            dayOfWeek: schedule.dayOfWeek,
+          },
+        },
+        update: {
+          openTime: schedule.openTime,
+          closeTime: schedule.closeTime,
+          isOpen: schedule.isOpen,
+        },
+        create: {
+          arenaId,
+          dayOfWeek: schedule.dayOfWeek,
+          openTime: schedule.openTime,
+          closeTime: schedule.closeTime,
+          isOpen: schedule.isOpen,
+        },
+      })
+    );
+
+    await this.prisma.$transaction(operations);
+    return { message: 'Grade de horários de funcionamento atualizada com sucesso.' };
+  }
+
+  // 2. Adicionar Feriado ou Dia Fechado Especial
+  async addHoliday(arenaId: string, user: any, dateStr: string, description?: string) {
+    await this.validateArenaManagementPermission(arenaId, user);
+
+    const holidayDate = new Date(dateStr);
+    holidayDate.setUTCHours(0, 0, 0, 0);
+
+    return this.prisma.arenaHoliday.upsert({
+      where: {
+        arenaId_date: { arenaId, date: holidayDate },
+      },
+      update: { description },
+      create: { arenaId, date: holidayDate, description },
+    });
+  }
+
+  // 📄 Método auxiliar de validação reutilizável
+  private async validateArenaManagementPermission(arenaId: string, user: any) {
+    if (user.role === Role.SUPERADMIN) return;
+
+    const arena = await this.prisma.arena.findUnique({
+      where: { id: arenaId },
+      select: { admins: { select: { id: true } } },
+    });
+
+    if (!arena) throw new NotFoundException('Arena não encontrada.');
+
+    const isAdmin = arena.admins.some((a) => a.id === user.id);
+    if (!isAdmin) {
+      throw new ForbiddenException('Você não tem permissão para gerenciar as configurações desta arena.');
+    }
   }
 }

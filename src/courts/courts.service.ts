@@ -51,20 +51,25 @@ export class CourtsService {
       throw new NotFoundException('Arena não encontrada.');
     }
 
-    // Upload de fotos (se enviadas)
-    const uploadedPhotos: string[] = [];
+    const photosToCreate: { name: string; path: string; mimeType: string; sizeBytes: number }[] = [];
+
     if (files && files.length > 0) {
       if (files.length > 3) {
         throw new BadRequestException('Uma quadra pode ter no máximo 3 fotos.');
       }
 
       for (const file of files) {
-        const url = await this.storageService.uploadPhoto(
+        const uploaded = await this.storageService.uploadPhoto(
           file,
-          'courts',
+          'courts/photos',
           targetArenaId,
         );
-        uploadedPhotos.push(url);
+        photosToCreate.push({
+          name: uploaded.name,
+          path: uploaded.path,
+          mimeType: uploaded.mimeType,
+          sizeBytes: uploaded.sizeBytes,
+        });
       }
     }
 
@@ -75,8 +80,18 @@ export class CourtsService {
         hourlyRate: dto.hourlyRate,
         isCovered: dto.isCovered ?? false,
         isActive: true,
-        photos: uploadedPhotos,
         arenaId: targetArenaId,
+        ...(photosToCreate.length > 0 && {
+          photos: {
+            create: photosToCreate,
+          },
+        }),
+      },
+      include: {
+        photos: {
+          where: { isActive: true },
+          select: { id: true, name: true, path: true, createdAt: true },
+        },
       },
     });
   }
@@ -97,8 +112,9 @@ export class CourtsService {
     const court = await this.prisma.court.findUnique({
       where: { id: courtId },
       include: {
-        arena: {
-          select: { id: true, name: true, city: true, state: true },
+        photos: {
+          where: { isActive: true },
+          select: { id: true, name: true, path: true, createdAt: true },
         },
       },
     });
@@ -120,6 +136,7 @@ export class CourtsService {
     const court = await this.prisma.court.findUnique({
       where: { id: courtId },
       include: {
+        photos: { where: { isActive: true } },
         arena: {
           include: { admins: { select: { id: true } } },
         },
@@ -135,24 +152,29 @@ export class CourtsService {
       throw new ForbiddenException('Você só pode gerenciar quadras das suas próprias arenas.');
     }
 
-    const newPhotosUrls: string[] = [];
+    const newPhotosData: { name: string; path: string; mimeType: string; sizeBytes: number }[] = [];
     if (files && files.length > 0) {
       const currentCount = court.photos.length;
       const incomingCount = files.length;
 
       if (currentCount + incomingCount > 3) {
         throw new BadRequestException(
-          `Limite de fotos excedido! Esta quadra já tem ${currentCount} foto(s) e o limite máximo é 3.`,
+          `Limite de fotos excedido! Esta quadra já tem ${currentCount} foto(s) ativa(s) e o limite máximo é 3.`,
         );
       }
 
       for (const file of files) {
-        const url = await this.storageService.uploadPhoto(
+        const uploaded = await this.storageService.uploadPhoto(
           file,
-          'courts',
+          'courts/photos',
           court.arenaId,
         );
-        newPhotosUrls.push(url);
+        newPhotosData.push({
+          name: uploaded.name,
+          path: uploaded.path,
+          mimeType: uploaded.mimeType,
+          sizeBytes: uploaded.sizeBytes,
+        });
       }
     }
 
@@ -162,19 +184,27 @@ export class CourtsService {
       ...(dto.hourlyRate !== undefined && { hourlyRate: dto.hourlyRate }),
       ...(dto.isCovered !== undefined && { isCovered: dto.isCovered }),
       ...(dto.isActive !== undefined && { isActive: dto.isActive }),
-      ...(newPhotosUrls.length > 0 && {
-        photos: [...court.photos, ...newPhotosUrls],
+      ...(newPhotosData.length > 0 && {
+        photos: {
+          create: newPhotosData,
+        },
       }),
     };
 
     return this.prisma.court.update({
       where: { id: courtId },
       data: dataToUpdate,
+      include: {
+        photos: {
+          where: { isActive: true },
+          select: { id: true, name: true, path: true, createdAt: true },
+        },
+      },
     });
   }
 
   // 5. Remover Foto Específica da Quadra
-  async removeCourtPhoto(courtId: string, user: any, photoUrl: string) {
+  async removeCourtPhoto(courtId: string, user: any, fileId: string) {
     const court = await this.prisma.court.findUnique({
       where: { id: courtId },
       include: {
@@ -189,13 +219,19 @@ export class CourtsService {
       throw new ForbiddenException('Sem permissão para alterar fotos desta quadra.');
     }
 
-    const updatedPhotos = court.photos.filter((p) => p !== photoUrl);
-
-    return this.prisma.court.update({
-      where: { id: courtId },
-      data: { photos: updatedPhotos },
-      select: { id: true, name: true, photos: true },
+    const file = await this.prisma.file.findFirst({
+      where: { id: fileId, courtGalleryId: courtId },
     });
+
+    if (!file) {
+      throw new NotFoundException('Foto não encontrada nesta quadra.');
+    }
+
+    // Exclui do Firebase e do Banco
+    await this.storageService.deletePhotoByUrl(file.path);
+    await this.prisma.file.delete({ where: { id: fileId } });
+
+    return { message: 'Foto removida com sucesso.' };
   }
 
   // 6. Toggle Status (Ativar / Desativar)
