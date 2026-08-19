@@ -653,6 +653,125 @@ export class ArenasService {
     };
   }
 
+  async updateOperatingHours(arenaId: string, user: any, dto: UpdateOperatingHoursDto) {
+    const arena = await this.prisma.arena.findUnique({ where: { id: arenaId }, select: { id: true } });
+    if (!arena) throw new NotFoundException('Arena não encontrada.');
+
+    await this.validateArenaManagementPermission(arenaId, user);
+
+    const dayNumbers = dto.schedules.map((s) => s.dayOfWeek);
+    if (new Set(dayNumbers).size !== dayNumbers.length) {
+      throw new ConflictException(
+        'Dias da semana duplicados no mesmo envio. Cada dayOfWeek deve aparecer uma única vez.',
+      );
+    }
+    for (const day of dto.schedules) {
+      if (day.isOpen && day.openTime >= day.closeTime) {
+        throw new ConflictException(
+          `Horário inválido para o dia ${day.dayOfWeek}: openTime deve ser antes de closeTime.`,
+        );
+      }
+    }
+
+    const operations = dto.schedules.map((schedule) =>
+      this.prisma.arenaOperatingHour.upsert({
+        where: {
+          arenaId_dayOfWeek: {
+            arenaId,
+            dayOfWeek: schedule.dayOfWeek,
+          },
+        },
+        update: {
+          openTime: schedule.openTime,
+          closeTime: schedule.closeTime,
+          isOpen: schedule.isOpen,
+        },
+        create: {
+          arenaId,
+          dayOfWeek: schedule.dayOfWeek,
+          openTime: schedule.openTime,
+          closeTime: schedule.closeTime,
+          isOpen: schedule.isOpen,
+        },
+      })
+    );
+
+    const schedules = await this.prisma.$transaction(operations);
+    return { arenaId, schedules };
+  }
+
+  async addHoliday(arenaId: string, user: any, dateStr: string, description?: string) {
+    const arena = await this.prisma.arena.findUnique({ where: { id: arenaId }, select: { id: true } });
+    if (!arena) throw new NotFoundException('Arena não encontrada.');
+
+    await this.validateArenaManagementPermission(arenaId, user);
+
+    const holidayDate = new Date(dateStr);
+    holidayDate.setUTCHours(0, 0, 0, 0);
+
+    return this.prisma.arenaHoliday.upsert({
+      where: {
+        arenaId_date: { arenaId, date: holidayDate },
+      },
+      update: { description },
+      create: { arenaId, date: holidayDate, description },
+    });
+  }
+
+  async getOperatingHours(arenaId: string, user: any) {
+    const arena = await this.prisma.arena.findUnique({
+      where: { id: arenaId },
+      select: { id: true },
+    });
+    if (!arena) throw new NotFoundException('Arena não encontrada.');
+
+    await this.validateArenaManagementPermission(arenaId, user);
+
+    const schedules = await this.prisma.arenaOperatingHour.findMany({
+      where: { arenaId },
+      orderBy: { dayOfWeek: 'asc' },
+    });
+
+    return { arenaId, schedules };
+  }
+
+  async getHolidays(arenaId: string, user: any) {
+    const arena = await this.prisma.arena.findUnique({
+      where: { id: arenaId },
+      select: { id: true },
+    });
+    if (!arena) throw new NotFoundException('Arena não encontrada.');
+
+    await this.validateArenaManagementPermission(arenaId, user);
+
+    const holidays = await this.prisma.arenaHoliday.findMany({
+      where: { arenaId },
+      orderBy: { date: 'asc' },
+    });
+
+    return { arenaId, holidays };
+  }
+
+  async removeHoliday(arenaId: string, user: any, holidayId: string) {
+    const arena = await this.prisma.arena.findUnique({ where: { id: arenaId }, select: { id: true } });
+    if (!arena) throw new NotFoundException('Arena não encontrada.');
+
+    await this.validateArenaManagementPermission(arenaId, user);
+
+    const holiday = await this.prisma.arenaHoliday.findUnique({
+      where: { id: holidayId },
+    });
+
+    if (!holiday || holiday.arenaId !== arenaId) {
+      throw new NotFoundException('Fechamento não encontrado para esta arena.');
+    }
+
+    await this.validateArenaManagementPermission(arenaId, user);
+
+    await this.prisma.arenaHoliday.delete({ where: { id: holidayId } });
+    return { message: 'Fechamento removido com sucesso.' };
+  }
+
   async getAvailability(arenaId: string, query: FindArenaAvailabilityQueryDto) {
     const targetDate = new Date(query.date);
     const dayOfWeek = targetDate.getUTCDay();
@@ -809,66 +928,23 @@ export class ArenasService {
     };
   }
 
-  // 1. Atualizar ou Criar Grade Semanal de Horários
-  async updateOperatingHours(arenaId: string, user: any, dto: UpdateOperatingHoursDto) {
-    await this.validateArenaManagementPermission(arenaId, user);
-
-    const operations = dto.schedules.map((schedule) =>
-      this.prisma.arenaOperatingHour.upsert({
-        where: {
-          arenaId_dayOfWeek: {
-            arenaId,
-            dayOfWeek: schedule.dayOfWeek,
-          },
-        },
-        update: {
-          openTime: schedule.openTime,
-          closeTime: schedule.closeTime,
-          isOpen: schedule.isOpen,
-        },
-        create: {
-          arenaId,
-          dayOfWeek: schedule.dayOfWeek,
-          openTime: schedule.openTime,
-          closeTime: schedule.closeTime,
-          isOpen: schedule.isOpen,
-        },
-      })
-    );
-
-    await this.prisma.$transaction(operations);
-    return { message: 'Grade de horários de funcionamento atualizada com sucesso.' };
-  }
-
-  // 2. Adicionar Feriado ou Dia Fechado Especial
-  async addHoliday(arenaId: string, user: any, dateStr: string, description?: string) {
-    await this.validateArenaManagementPermission(arenaId, user);
-
-    const holidayDate = new Date(dateStr);
-    holidayDate.setUTCHours(0, 0, 0, 0);
-
-    return this.prisma.arenaHoliday.upsert({
-      where: {
-        arenaId_date: { arenaId, date: holidayDate },
-      },
-      update: { description },
-      create: { arenaId, date: holidayDate, description },
-    });
-  }
-
-  // 📄 Método auxiliar de validação reutilizável
   private async validateArenaManagementPermission(arenaId: string, user: any) {
     if (user.role === Role.SUPERADMIN) return;
 
-    const arena = await this.prisma.arena.findUnique({
-      where: { id: arenaId },
-      select: { admins: { select: { id: true } } },
+    const dbUser = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      include: {
+        arenasManaged: { select: { id: true } },
+        arenasEmployed: { select: { id: true } },
+      },
     });
 
-    if (!arena) throw new NotFoundException('Arena não encontrada.');
+    const allowedArenaIds = [
+      ...(dbUser?.arenasManaged.map((a) => a.id) || []),
+      ...(dbUser?.arenasEmployed.map((a) => a.id) || []),
+    ];
 
-    const isAdmin = arena.admins.some((a) => a.id === user.id);
-    if (!isAdmin) {
+    if (!allowedArenaIds.includes(arenaId)) {
       throw new ForbiddenException('Você não tem permissão para gerenciar as configurações desta arena.');
     }
   }

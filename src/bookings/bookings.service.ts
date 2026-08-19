@@ -10,143 +10,40 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { BookingFilterDto } from './dto/booking-filter.dto';
 import { BookingStatus, Role } from '@prisma/client';
+import { CreateAppBookingDto } from './dto/create-app-booking.dto';
 
 @Injectable()
 export class BookingsService {
   constructor(private prisma: PrismaService) {}
 
-  async create(user: any, dto: CreateBookingDto) {
+  
+  // -------------------------------------------------------------
+  // 1. FLUXO DO APP MOBILE (Atleta - Sem trava de impersonação)
+  // -------------------------------------------------------------
+  async createAppBooking(user: any, dto: CreateAppBookingDto) {
     const start = new Date(dto.startTime);
     const end = new Date(dto.endTime);
     const now = new Date();
 
-    // 1. Validações Temporais Básicas
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-      throw new BadRequestException('Formato de data inválido.');
-    }
-    if (start >= end) {
-      throw new BadRequestException('O horário de início deve ser anterior ao horário de término.');
-    }
-    if (start < now) {
-      throw new BadRequestException('Não é possível criar agendamentos no passado.');
-    }
+    this.validateTimeWindow(start, end, now);
 
     const durationInHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-    if (durationInHours < 0.5) {
-      throw new BadRequestException('O tempo mínimo de agendamento é de 30 minutos.');
-    }
 
     try {
-      // 2. Transação Serializável para Prevenir Overbooking
       return await this.prisma.$transaction(
         async (tx) => {
-          // Busca a quadra com arena, horários semanais e bloqueios de data
-          const targetDateOnly = new Date(start);
-          targetDateOnly.setUTCHours(0, 0, 0, 0);
+          const court = await this.fetchAndValidateCourtAvailability(tx, dto.courtId, start, end);
 
-          const dayOfWeek = start.getUTCDay();
-
-          const court = await tx.court.findUnique({
-            where: { id: dto.courtId },
-            include: {
-              arena: {
-                include: {
-                  admins: { select: { id: true } },
-                  staff: { select: { id: true } },
-                  operatingHours: {
-                    where: { dayOfWeek },
-                  },
-                  holidays: {
-                    where: { date: targetDateOnly },
-                  },
-                },
-              },
-            },
-          });
-
-          if (!court || !court.isActive) {
-            throw new NotFoundException('Quadra não encontrada ou inativa.');
-          }
-          if (!court.arena.isActive) {
-            throw new BadRequestException('A arena desta quadra está inativa no momento.');
-          }
-
-          // 3. Validação de Feriado / Data Bloqueada
-          if (court.arena.holidays.length > 0) {
-            const holiday = court.arena.holidays[0];
-            throw new BadRequestException(
-              `A arena não aceita agendamentos nesta data (${holiday.description || 'Feriado/Fechado'}).`,
-            );
-          }
-
-          // 4. Validação de Dia da Semana e Janela de Horário
-          const schedule = court.arena.operatingHours[0];
-          if (schedule && !schedule.isOpen) {
-            throw new BadRequestException('A arena não abre neste dia da semana.');
-          }
-
-          const openTimeStr = schedule?.openTime || '06:00';
-          const closeTimeStr = schedule?.closeTime || '23:00';
-
-          const [openHour, openMin] = openTimeStr.split(':').map(Number);
-          const [closeHour, closeMin] = closeTimeStr.split(':').map(Number);
-
-          const scheduleOpen = new Date(start);
-          scheduleOpen.setUTCHours(openHour, openMin, 0, 0);
-
-          const scheduleClose = new Date(start);
-          scheduleClose.setUTCHours(closeHour, closeMin, 0, 0);
-
-          if (start < scheduleOpen || end > scheduleClose) {
-            throw new BadRequestException(
-              `Horário fora do funcionamento da arena (${openTimeStr} às ${closeTimeStr}).`,
-            );
-          }
-
-          // 5. Controle de Impersonação (Balcão vs Atleta)
-          const isArenaStaff =
-            court.arena.admins.some((a) => a.id === user.id) ||
-            court.arena.staff.some((s) => s.id === user.id) ||
-            user.role === Role.SUPERADMIN;
-
-          let targetUserId = user.id;
-
-          if (dto.userId || dto.customerName) {
-            if (!isArenaStaff) {
-              throw new ForbiddenException(
-                'Apenas administradores ou funcionários da arena podem criar reservas para terceiros.',
-              );
-            }
-            targetUserId = dto.userId || null;
-          }
-
-          // 6. Cálculo Imutável de Preço no Backend
           const hourlyRate = Number(court.hourlyRate);
           const calculatedTotal = Number((durationInHours * hourlyRate).toFixed(2));
 
-          // 7. Checagem de Conflito de Horário (CONFIRMED e PENDING)
-          const conflictingBooking = await tx.booking.findFirst({
-            where: {
-              courtId: court.id,
-              status: { in: [BookingStatus.CONFIRMED, BookingStatus.RESERVED_LOCAL, BookingStatus.PENDING, BookingStatus.COMPLETED] },
-              AND: [
-                { startTime: { lt: end } },
-                { endTime: { gt: start } },
-              ],
-            },
-          });
-
-          if (conflictingBooking) {
-            throw new ConflictException('Já existe um agendamento para este horário nesta quadra.');
-          }
-
-          // 8. Criação do Agendamento
           return tx.booking.create({
             data: {
+              type: BookingType.FREE_PLAY,
               courtId: court.id,
               arenaId: court.arenaId,
-              userId: targetUserId,
-              customerName: !targetUserId ? dto.customerName : null,
+              userId: user.id,
+              customerName: null,
               startTime: start,
               endTime: end,
               totalAmount: calculatedTotal,
@@ -160,14 +57,192 @@ export class BookingsService {
         },
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 5_000,
+          timeout: 10_000,
         },
       );
     } catch (error: any) {
-      if (error?.code === 'P2034') {
-        throw new ConflictException('Horário acabou de ser reservado por outro usuário.');
-      }
-      throw error;
+      this.handlePrismaConflictError(error);
     }
+  }
+
+  // -------------------------------------------------------------
+  // 2. FLUXO DO PAINEL WEB / MANAGER (Admin, Staff e Professores)
+  // -------------------------------------------------------------
+  async createAdminBooking(user: any, dto: CreateBookingDto) {
+    const start = new Date(dto.startTime);
+    const end = new Date(dto.endTime);
+    const now = new Date();
+
+    this.validateTimeWindow(start, end, now);
+
+    const durationInHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+
+    try {
+      return await this.prisma.$transaction(
+        async (tx) => {
+          const court = await this.fetchAndValidateCourtAvailability(tx, dto.courtId, start, end);
+
+          // Validação de permissão do Staff na Arena
+          const isArenaStaff =
+            court.arena.admins.some((a) => a.id === user.id) ||
+            court.arena.staff.some((s) => s.id === user.id) ||
+            user.role === Role.SUPERADMIN;
+
+          if (!isArenaStaff) {
+            throw new ForbiddenException('Apenas a equipe da arena pode acessar o módulo de gestão.');
+          }
+
+          const targetUserId = dto.userId || null;
+          const hourlyRate = Number(court.hourlyRate);
+          const calculatedTotal = Number((durationInHours * hourlyRate).toFixed(2));
+
+          // Criação da reserva principal
+          const newBooking = await tx.booking.create({
+            data: {
+              type: dto.type || BookingType.FREE_PLAY,
+              courtId: court.id,
+              arenaId: court.arenaId,
+              userId: targetUserId,
+              customerName: !targetUserId ? dto.customerName : null,
+              coachId: dto.coachId || null,
+              pricePerPlayer: dto.pricePerPlayer || null,
+              maxPlayers: dto.maxPlayers || null,
+              tournamentName: dto.tournamentName || null,
+              isRecurring: dto.isRecurring || false,
+              recurrenceEnd: dto.recurrenceEnd ? new Date(dto.recurrenceEnd) : null,
+              startTime: start,
+              endTime: end,
+              totalAmount: calculatedTotal,
+              status: BookingStatus.CONFIRMED,
+            },
+            include: {
+              court: { select: { id: true, name: true, sport: true } },
+              arena: { select: { id: true, name: true } },
+            },
+          });
+
+          // Inclusão de participantes iniciais (se fornecidos)
+          if (dto.participantIds && dto.participantIds.length > 0) {
+            await tx.bookingParticipant.createMany({
+              data: dto.participantIds.map((pId) => ({
+                bookingId: newBooking.id,
+                userId: pId,
+                pricePaid: dto.pricePerPlayer || 0,
+                status: ParticipantStatus.CONFIRMED,
+              })),
+            });
+          }
+
+          return newBooking;
+        },
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 5_000,
+          timeout: 10_000,
+        },
+      );
+    } catch (error: any) {
+      this.handlePrismaConflictError(error);
+    }
+  }
+
+  // -------------------------------------------------------------
+  // MÉTODOS AUXILIARES DE SUPORTE
+  // -------------------------------------------------------------
+  private validateTimeWindow(start: Date, end: Date, now: Date) {
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      throw new BadRequestException('Formato de data inválido.');
+    }
+    if (start >= end) {
+      throw new BadRequestException('O horário de início deve ser anterior ao de término.');
+    }
+    if (start < now) {
+      throw new BadRequestException('Não é possível criar agendamentos no passado.');
+    }
+    const durationInHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+    if (durationInHours < 0.5) {
+      throw new BadRequestException('O tempo mínimo de agendamento é de 30 minutos.');
+    }
+  }
+
+  private async fetchAndValidateCourtAvailability(tx: any, courtId: string, start: Date, end: Date) {
+    const targetDateOnly = new Date(start);
+    targetDateOnly.setUTCHours(0, 0, 0, 0);
+    const dayOfWeek = start.getUTCDay();
+
+    const court = await tx.court.findUnique({
+      where: { id: courtId },
+      include: {
+        arena: {
+          include: {
+            admins: { select: { id: true } },
+            staff: { select: { id: true } },
+            operatingHours: { where: { dayOfWeek } },
+            holidays: { where: { date: targetDateOnly } },
+          },
+        },
+      },
+    });
+
+    if (!court || !court.isActive) {
+      throw new NotFoundException('Quadra não encontrada ou inativa.');
+    }
+    if (!court.arena.isActive) {
+      throw new BadRequestException('A arena desta quadra está inativa no momento.');
+    }
+
+    if (court.arena.holidays.length > 0) {
+      const holiday = court.arena.holidays[0];
+      throw new BadRequestException(`Arena fechada nesta data (${holiday.description || 'Feriado'}).`);
+    }
+
+    const schedule = court.arena.operatingHours[0];
+    if (schedule && !schedule.isOpen) {
+      throw new BadRequestException('A arena não abre neste dia da semana.');
+    }
+
+    const openTimeStr = schedule?.openTime || '06:00';
+    const closeTimeStr = schedule?.closeTime || '23:00';
+    const [openH, openM] = openTimeStr.split(':').map(Number);
+    const [closeH, closeM] = closeTimeStr.split(':').map(Number);
+
+    const scheduleOpen = new Date(start);
+    scheduleOpen.setUTCHours(openH, openM, 0, 0);
+
+    const scheduleClose = new Date(start);
+    scheduleClose.setUTCHours(closeH, closeM, 0, 0);
+
+    if (start < scheduleOpen || end > scheduleClose) {
+      throw new BadRequestException(`Horário fora de funcionamento (${openTimeStr} às ${closeTimeStr}).`);
+    }
+
+    const conflictingBooking = await tx.booking.findFirst({
+      where: {
+        courtId: court.id,
+        status: { in: [BookingStatus.CONFIRMED, BookingStatus.RESERVED_LOCAL, BookingStatus.PENDING] },
+        AND: [
+          { startTime: { lt: end } },
+          { endTime: { gt: start } },
+        ],
+      },
+    });
+
+    if (conflictingBooking) {
+      throw new ConflictException('Já existe um agendamento para este horário nesta quadra.');
+    }
+
+    return court;
+  }
+
+  private handlePrismaConflictError(error: any) {
+    if (error?.code === 'P2034') {
+      throw new ConflictException('Horário acabou de ser reservado por outro usuário.');
+    }
+    if (error?.code === 'P2028') {
+      throw new ConflictException('O sistema está com alta demanda no momento. Tente novamente.');
+    }
+    throw error;
   }
 
   async findAll(user: any, filter: BookingFilterDto) {
