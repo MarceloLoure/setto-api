@@ -55,10 +55,12 @@ export class ArenasController {
   }
 
   @Get()
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Listar arenas cadastradas com busca e paginação (Público)' })
   @ApiResponse({ status: 200, description: 'Lista paginada de arenas.' })
-  findAll(@Query() query: FindArenasQueryDto) {
-    return this.arenasService.findAll(query);
+  findAll(@Query() query: FindArenasQueryDto, @CurrentUser('id') currentUserId?: string) {
+    return this.arenasService.findAll(query, currentUserId);
   }
 
   @Get('following')
@@ -71,6 +73,8 @@ export class ArenasController {
   }
 
   @Get(':id')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Buscar detalhes de uma arena por ID' })
   findById(
     @Param('id') id: string,

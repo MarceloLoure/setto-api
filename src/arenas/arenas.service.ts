@@ -155,9 +155,9 @@ export class ArenasService {
         const currentCount = arena.photos.length;
         const incomingCount = files.photos.length;
 
-        if (currentCount + incomingCount > 3) {
+        if (currentCount + incomingCount > 10) {
           throw new BadRequestException(
-            `Limite de fotos excedido! Esta arena já tem ${currentCount} foto(s) ativa(s) e o limite máximo é 3.`,
+            `Limite de fotos excedido! Esta arena já tem ${currentCount} foto(s) ativa(s) e o limite máximo é 10.`,
           );
         }
 
@@ -378,11 +378,8 @@ export class ArenasService {
             },
           },
           followers: currentUserId
-            ? {
-                where: { userId: currentUserId },
-                select: { id: true },
-              }
-            : false,
+          ? { where: { userId: currentUserId }, select: { id: true } }
+          : false,
           courts: {
             where: { isActive: true },
             select: {
@@ -435,35 +432,40 @@ export class ArenasService {
     const arena = await this.prisma.arena.findUnique({
       where: { id: arenaId },
       include: {
+        logo: true,
+        cover: true,
+        photos: true,
         courts: {
           where: { isActive: true },
-          select: { id: true, name: true, sport: true },
+          select: {
+            id: true,
+            name: true,
+            sport: true,
+            hourlyRate: true,
+            isCovered: true,
+            photos: true,
+          },
         },
         _count: {
-          select: { followers: true },
+          select: { courts: { where: { isActive: true } }, followers: true },
         },
       },
     });
 
-    if (!arena) {
-      throw new NotFoundException('Arena não encontrada.');
-    }
+    if (!arena) throw new NotFoundException('Arena não encontrada.');
 
     let isFollowing = false;
     if (currentUserId) {
       const followRecord = await this.prisma.arenaFollower.findUnique({
-        where: {
-          userId_arenaId: {
-            userId: currentUserId,
-            arenaId: arenaId,
-          },
-        },
+        where: { userId_arenaId: { userId: currentUserId, arenaId } },
       });
       isFollowing = !!followRecord;
     }
 
     return {
       ...arena,
+      totalActiveCourts: arena._count.courts,
+      totalFollowers: arena._count.followers,
       isFollowing,
     };
   }
