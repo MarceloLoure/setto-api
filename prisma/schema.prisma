@@ -88,6 +88,28 @@ enum ParticipantStatus {
   CANCELLED
 }
 
+enum BannerPosition {
+  HERO         // Carrossel principal no topo
+  STRIP        // Banner régua no meio da página (faixa promocional/aviso)
+  POPUP        // Modal ao abrir o app
+}
+
+enum BannerActionType {
+  ARENA_DETAILS // Abre uma arena específica no app
+  COURT_DETAILS // Abre uma quadra específica
+  EXTERNAL_URL  // Abre navegador externo (ex: patrocinador, loja)
+  NONE          // Banner puramente visual / informativo
+}
+
+enum HomeSectionType {
+  HERO_BANNERS        // Carrossel de banners principais no topo
+  STRIP_BANNER        // Banner régua no meio ou topo
+  NEXT_BOOKINGS       // Próximos jogos do atleta
+  FOLLOWED_ARENAS     // Arenas que o atleta segue
+  CITY_ARENAS         // Arenas na cidade do atleta
+  RECOMMENDED_ARENAS  // Arenas mais populares/em alta
+}
+
 model User {
   id           String        @id @default(uuid())
   name         String
@@ -161,6 +183,7 @@ model Arena {
   
   courts      Court[]
   bookings    Booking[]
+  banners        Banner[]
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
@@ -390,8 +413,52 @@ model File {
   courtGalleryId String?
   courtGallery   Court?  @relation("CourtGallery", fields: [courtGalleryId], references: [id], onDelete: Cascade)
 
+  banner Banner? @relation("BannerImage")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@map("files")
+}
+
+model Banner {
+  id          String           @id @default(uuid())
+  title       String?          // Título interno ou de acessibilidade
+  position    BannerPosition   @default(HERO)
+  actionType  BannerActionType @default(NONE)
+  actionValue String?          // ID da arena/quadra ou URL externa
+  
+  order       Int              @default(0) // Ordenação manual na tela
+  isActive    Boolean          @default(true)
+  
+  // Agendamento Opcional
+  startDate   DateTime?
+  endDate     DateTime?
+
+  // Imagem do Banner vinculada à entidade File
+  imageFileId String           @unique
+  image       File             @relation("BannerImage", fields: [imageFileId], references: [id], onDelete: Cascade)
+
+  // Escopo: Banner Global do SuperAdmin ou de uma Arena Específica
+  arenaId     String?
+  arena       Arena?           @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@map("banners")
+}
+
+model HomeSection {
+  id        String          @id @default(uuid())
+  title     String?         // Título visível na seção (ex: "Seus Próximos Jogos")
+  subtitle  String?         // Subtítulo opcional
+  type      HomeSectionType
+  order     Int             @default(0) // Posição na tela (1, 2, 3...)
+  isActive  Boolean         @default(true)
+
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@map("home_sections")
 }

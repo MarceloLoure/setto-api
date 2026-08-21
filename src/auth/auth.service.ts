@@ -6,6 +6,7 @@ import * as bcrypt from 'bcrypt';
 import { RegisterDto } from './dto/register.dto';
 import { SocialLoginDto } from './dto/social-login.dto';
 import { FirebaseService } from '../firebase/firebase.service';
+import { Role } from '@prisma/client';
 
 @Injectable()
 export class AuthService {
@@ -55,7 +56,7 @@ export class AuthService {
         email: user.email,
         role: user.role,
         avatar: user.avatar,
-        arenas: user.arenasManaged,
+        isManager: user.arenasManaged.length > 0 || user.role === Role.SUPERADMIN,
       },
     };
   }
@@ -150,7 +151,7 @@ export class AuthService {
         email: user.email,
         role: user.role,
         avatar: user.avatar,
-        arenas: user.arenasManaged,
+        isManager: user.arenasManaged.length > 0 || user.role === Role.SUPERADMIN,
       },
     };
   }
@@ -208,7 +209,7 @@ export class AuthService {
         email: user.email,
         role: user.role,
         avatar: user.avatar,
-        arenas: user.arenasManaged,
+        isManager: user.arenasManaged.length > 0 || user.role === Role.SUPERADMIN,
         },
     };
     }
@@ -258,7 +259,7 @@ export class AuthService {
         email: user.email,
         role: user.role,
         avatar: user.avatar,
-        arenas: user.arenasManaged,
+        isManager: user.arenasManaged.length > 0 || user.role === Role.SUPERADMIN,
       },
     };
   }

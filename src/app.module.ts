@@ -15,6 +15,7 @@ import { SuperAdminModule } from './super-admin/super-admin.module';
 import { StaffModule } from './staff/staff.module';
 import { PaymentsModule } from './payments/payments.module';
 import { FirebaseModule } from './firebase/firebase.module';
+import { HomeModule } from './home/home.module';
 
 @Module({
   imports: [
@@ -38,7 +39,7 @@ import { FirebaseModule } from './firebase/firebase.module';
         limit: 100,  // Máximo 100 requisições por minuto por IP
       },
     ]),
-    PrismaModule, AuthModule, UsersModule, ArenasModule, CourtsModule, BookingsModule, SuperAdminModule, StaffModule, PaymentsModule],
+    PrismaModule, AuthModule, HomeModule, UsersModule, ArenasModule, CourtsModule, BookingsModule, SuperAdminModule, StaffModule, PaymentsModule],
   controllers: [AppController],
   providers: [
     {
