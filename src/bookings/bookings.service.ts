@@ -11,6 +11,7 @@ import { CreateBookingDto } from './dto/create-booking.dto';
 import { BookingFilterDto } from './dto/booking-filter.dto';
 import { BookingStatus, Role } from '@prisma/client';
 import { CreateAppBookingDto } from './dto/create-app-booking.dto';
+import { ManagerBookingFilterDto } from './dto/manager-booking-filter.dto';
 
 @Injectable()
 export class BookingsService {
@@ -399,6 +400,118 @@ export class BookingsService {
     return this.prisma.booking.update({
       where: { id: bookingId },
       data: { status: newStatus },
+    });
+  }
+
+  async findManagerBookings(user: any, filter: ManagerBookingFilterDto) {
+    const whereClause: Prisma.BookingWhereInput = {};
+
+    // 1. Controle de Acesso por Perfil
+    if (user.role === Role.ARENA_ADMIN || user.role === Role.RECEPTIONIST || user.role === Role.TEACHER) {
+      const dbUser = await this.prisma.user.findUnique({
+        where: { id: user.id },
+        include: {
+          arenasManaged: { select: { id: true } },
+          arenasEmployed: { select: { id: true } },
+        },
+      });
+
+      const allowedArenaIds = [
+        ...(dbUser?.arenasManaged.map((a) => a.id) || []),
+        ...(dbUser?.arenasEmployed.map((a) => a.id) || []),
+      ];
+
+      if (filter.arenaId) {
+        if (!allowedArenaIds.includes(filter.arenaId)) {
+          throw new ForbiddenException('Você não tem permissão para acessar os agendamentos desta arena.');
+        }
+        whereClause.arenaId = filter.arenaId;
+      } else {
+        whereClause.arenaId = { in: allowedArenaIds };
+      }
+    } else if (user.role === Role.SUPERADMIN) {
+      if (filter.arenaId) whereClause.arenaId = filter.arenaId;
+    } else {
+      throw new ForbiddenException('Acesso restrito à gestão de arenas.');
+    }
+
+    // 2. Filtros de Quadra, Status e Tipo
+    if (filter.courtId) whereClause.courtId = filter.courtId;
+    if (filter.status) whereClause.status = filter.status;
+    if (filter.type) whereClause.type = filter.type;
+
+    // 3. Filtro por Janela de Tempo (FullCalendar Range)
+    if (filter.startDate || filter.endDate) {
+      whereClause.AND = [];
+      if (filter.startDate) {
+        whereClause.AND.push({ startTime: { gte: new Date(filter.startDate) } });
+      }
+      if (filter.endDate) {
+        whereClause.AND.push({ endTime: { lte: new Date(filter.endDate) } });
+      }
+    }
+
+    // 4. Busca com relacionamentos
+    const bookings = await this.prisma.booking.findMany({
+      where: whereClause,
+      orderBy: { startTime: 'asc' },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+          },
+        },
+        court: {
+          select: {
+            id: true,
+            name: true,
+            sport: true,
+            hourlyRate: true,
+            isCovered: true,
+          },
+        },
+        arena: {
+          select: {
+            id: true,
+            name: true,
+            city: true,
+          },
+        },
+        participants: {
+          select: {
+            id: true,
+            status: true,
+            pricePaid: true,
+            user: {
+              select: {
+                id: true,
+                name: true,
+                phone: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    // Formatação de conveniência para a grade web
+    return bookings.map((b) => {
+      const isGuest = !b.user;
+      const clientDisplayName = isGuest ? b.customerName || 'Cliente Balcão' : b.user?.name;
+      const clientPhone = isGuest ? null : b.user?.phone;
+      const clientEmail = isGuest ? null : b.user?.email;
+
+      return {
+        ...b,
+        clientDisplayName,
+        clientPhone,
+        clientEmail,
+        isGuestBooking: isGuest,
+        confirmedParticipantsCount: b.participants?.length || 0,
+      };
     });
   }
 }
