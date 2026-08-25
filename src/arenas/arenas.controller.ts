@@ -36,6 +36,7 @@ import { ToggleArenaStatusDto } from './dto/toggle-arena-status.dto';
 import { UpdateArenaDto } from './dto/update-arena.dto';
 import { FindArenaAvailabilityQueryDto } from './dto/find-arena-availability-query.dto';
 import { CreateHolidayDto, UpdateOperatingHoursDto } from './dto/update-operating-hours.dto';
+import { DashboardSummaryQueryDto } from './dto/dashboard-summary-query.dto';
 
 @ApiTags('Arenas')
 @Controller('arenas')
@@ -215,6 +216,23 @@ export class ArenasController {
   @Query() query: FindArenaAvailabilityQueryDto,
   ) {
     return this.arenasService.getAvailability(arenaId, query);
+  }
+
+  @Get(':id/dashboard')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ARENA_ADMIN, Role.RECEPTIONIST, Role.SUPERADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Resumo gerencial da arena: agendamentos, cancelamentos, faturamento e ocupação por quadra (dia/semana/mês)',
+  })
+  @ApiResponse({ status: 200, description: 'Resumo do período retornado com sucesso.' })
+  getDashboardSummary(
+    @Param('id') arenaId: string,
+    @CurrentUser() user: any,
+    @Query() query: DashboardSummaryQueryDto,
+  ) {
+    return this.arenasService.getDashboardSummary(arenaId, user, query);
   }
 
   @Get(':id/operating-hours')

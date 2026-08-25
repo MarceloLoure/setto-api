@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, Role, BookingStatus, Sport } from '@prisma/client';
+import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { FirebaseStorageService } from '../storage/storage.service';
 import { CreateArenaRequestDto } from './dto/create-arena-request.dto';
@@ -14,12 +15,14 @@ import { FindArenasQueryDto } from './dto/find-arenas-query.dto';
 import { UpdateArenaDto } from './dto/update-arena.dto';
 import { FindArenaAvailabilityQueryDto } from './dto/find-arena-availability-query.dto';
 import { UpdateOperatingHoursDto } from './dto/update-operating-hours.dto';
+import { DashboardSummaryQueryDto } from './dto/dashboard-summary-query.dto';
 
 @Injectable()
 export class ArenasService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storageService: FirebaseStorageService,
+    private readonly jwtService: JwtService,
   ) {}
 
   async becomeArenaAdmin(userId: string, dto: CreateArenaRequestDto) {
@@ -78,8 +81,18 @@ export class ArenasService {
       return { arena: newArena, user: updatedUser };
     });
 
+    // O JWT antigo ainda carrega role: ATHLETE — sem emitir um token novo aqui,
+    // toda rota @Roles(ARENA_ADMIN) seguinte (criar quadra, editar arena, etc.)
+    // seria barrada com 403 até o usuário deslogar e logar de novo.
+    const newAccessToken = this.jwtService.sign({
+      sub: result.user.id,
+      email: result.user.email,
+      role: result.user.role,
+    });
+
     return {
       message: 'Arena cadastrada com sucesso e usuário promovido a ARENA_ADMIN.',
+      accessToken: newAccessToken,
       arena: result.arena,
       user: {
         id: result.user.id,
@@ -90,7 +103,6 @@ export class ArenasService {
       },
     };
   }
-
   async updateArena(
     arenaId: string,
     user: any,
@@ -947,5 +959,141 @@ export class ArenasService {
     if (!allowedArenaIds.includes(arenaId)) {
       throw new ForbiddenException('Você não tem permissão para gerenciar as configurações desta arena.');
     }
+  }
+
+  async getDashboardSummary(arenaId: string, user: any, query: DashboardSummaryQueryDto) {
+    const arena = await this.prisma.arena.findUnique({
+      where: { id: arenaId },
+      select: { id: true, name: true },
+    });
+    if (!arena) throw new NotFoundException('Arena não encontrada.');
+
+    await this.validateArenaManagementPermission(arenaId, user);
+
+    const period = query.period || 'week';
+    const refDate = query.date ? new Date(`${query.date}T00:00:00.000Z`) : new Date();
+    refDate.setUTCHours(0, 0, 0, 0);
+
+    const { rangeStart, rangeEnd } = this.resolveDashboardRange(period, refDate);
+
+    const [courts, operatingHours, holidays, bookings, payments] = await Promise.all([
+      this.prisma.court.findMany({
+        where: { arenaId, isActive: true },
+        select: { id: true, name: true, sport: true },
+        orderBy: { name: 'asc' },
+      }),
+      this.prisma.arenaOperatingHour.findMany({ where: { arenaId } }),
+      this.prisma.arenaHoliday.findMany({
+        where: { arenaId, date: { gte: rangeStart, lt: rangeEnd } },
+      }),
+      this.prisma.booking.findMany({
+        where: { arenaId, startTime: { gte: rangeStart, lt: rangeEnd } },
+        select: { id: true, courtId: true, startTime: true, endTime: true, status: true, totalAmount: true },
+      }),
+      this.prisma.payment.findMany({
+        where: { arenaId, status: 'COMPLETED', paidAt: { gte: rangeStart, lt: rangeEnd } },
+        select: { amount: true, method: true, category: true },
+      }),
+    ]);
+
+    // Mapa de horário por dia da semana, e um Set das datas fechadas por feriado
+    // dentro do período — usados pra calcular o total de slots "vagáveis" por dia.
+    const scheduleByDay = new Map(operatingHours.map((h) => [h.dayOfWeek, h]));
+    const holidayDates = new Set(holidays.map((h) => h.date.toISOString().slice(0, 10)));
+    const slotMinutes = 60;
+
+    let totalSlotsPerCourt = 0; // total de slots "possíveis" no período, por quadra (todas as quadras têm o mesmo horário de funcionamento)
+    for (let cursor = new Date(rangeStart); cursor < rangeEnd; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+      const dateKey = cursor.toISOString().slice(0, 10);
+      if (holidayDates.has(dateKey)) continue;
+
+      const dayOfWeek = cursor.getUTCDay();
+      const schedule = scheduleByDay.get(dayOfWeek);
+      if (schedule && !schedule.isOpen) continue;
+
+      const openTimeStr = schedule?.openTime || '06:00';
+      const closeTimeStr = schedule?.closeTime || '23:00';
+      const [openHour, openMin] = openTimeStr.split(':').map(Number);
+      const [closeHour, closeMin] = closeTimeStr.split(':').map(Number);
+      const openMinutesTotal = openHour * 60 + openMin;
+      const closeMinutesTotal = closeHour * 60 + closeMin;
+
+      totalSlotsPerCourt += Math.max(0, Math.floor((closeMinutesTotal - openMinutesTotal) / slotMinutes));
+    }
+
+    const activeBookings = bookings.filter((b) => b.status !== BookingStatus.CANCELLED);
+    const cancelledBookings = bookings.filter((b) => b.status === BookingStatus.CANCELLED);
+    const completedBookings = bookings.filter((b) => b.status === BookingStatus.COMPLETED);
+
+    const courtsSummary = courts.map((court) => {
+      const courtActiveBookings = activeBookings.filter((b) => b.courtId === court.id);
+      // Cada reserva ocupa 1+ slots dependendo da duração (ex: torneio de 2h = 2 slots de 1h)
+      const bookedSlots = courtActiveBookings.reduce((sum, b) => {
+        const durationMinutes = (b.endTime.getTime() - b.startTime.getTime()) / 60000;
+        return sum + Math.max(1, Math.round(durationMinutes / slotMinutes));
+      }, 0);
+      const freeSlots = Math.max(0, totalSlotsPerCourt - bookedSlots);
+
+      return {
+        courtId: court.id,
+        courtName: court.name,
+        sport: court.sport,
+        totalSlots: totalSlotsPerCourt,
+        bookedSlots,
+        freeSlots,
+        occupancyRate: totalSlotsPerCourt > 0 ? Number(((bookedSlots / totalSlotsPerCourt) * 100).toFixed(1)) : 0,
+        bookingsCount: courtActiveBookings.length,
+      };
+    });
+
+    const revenueByMethod: Record<string, number> = {};
+    const revenueByCategory: Record<string, number> = {};
+    let totalRevenue = 0;
+    for (const payment of payments) {
+      const amount = Number(payment.amount);
+      totalRevenue += amount;
+      revenueByMethod[payment.method] = (revenueByMethod[payment.method] || 0) + amount;
+      revenueByCategory[payment.category] = (revenueByCategory[payment.category] || 0) + amount;
+    }
+
+    return {
+      arena: { id: arena.id, name: arena.name },
+      period,
+      rangeStart: rangeStart.toISOString().slice(0, 10),
+      rangeEnd: new Date(rangeEnd.getTime() - 86400000).toISOString().slice(0, 10), // inclusivo, pra exibição
+      bookings: {
+        total: bookings.length,
+        confirmed: activeBookings.length,
+        cancelled: cancelledBookings.length,
+        completed: completedBookings.length,
+      },
+      revenue: {
+        total: Number(totalRevenue.toFixed(2)),
+        byMethod: revenueByMethod,
+        byCategory: revenueByCategory,
+      },
+      courts: courtsSummary,
+    };
+  }
+
+  private resolveDashboardRange(period: 'day' | 'week' | 'month', refDate: Date) {
+    const rangeStart = new Date(refDate);
+    const rangeEnd = new Date(refDate);
+
+    if (period === 'day') {
+      rangeEnd.setUTCDate(rangeEnd.getUTCDate() + 1);
+    } else if (period === 'week') {
+      // Semana de domingo a sábado, mesma convenção usada em dayOfWeek (0 = domingo)
+      const dayOfWeek = rangeStart.getUTCDay();
+      rangeStart.setUTCDate(rangeStart.getUTCDate() - dayOfWeek);
+      rangeEnd.setTime(rangeStart.getTime());
+      rangeEnd.setUTCDate(rangeEnd.getUTCDate() + 7);
+    } else {
+      rangeStart.setUTCDate(1);
+      rangeEnd.setTime(rangeStart.getTime());
+      rangeEnd.setUTCMonth(rangeEnd.getUTCMonth() + 1);
+    }
+
+    return { rangeStart, rangeEnd };
   }
 }
