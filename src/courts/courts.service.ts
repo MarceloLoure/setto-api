@@ -97,13 +97,22 @@ export class CourtsService {
   }
 
   // 2. Listar Quadras de uma Arena
-  async findByArena(arenaId: string, onlyActive = false) {
+  async findByArena(arenaId: string, onlyActive = true) {
     return this.prisma.court.findMany({
       where: {
         arenaId,
-        ...(onlyActive && { isActive: true }),
+        ...(onlyActive ? { isActive: true } : {}),
       },
-      orderBy: { createdAt: 'asc' },
+      include: {
+        photos: {
+          select: {
+            id: true,
+            path: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: { name: 'asc' },
     });
   }
 
