@@ -970,16 +970,17 @@ export class ArenasService {
 
     await this.validateArenaManagementPermission(arenaId, user);
 
+    const now = new Date();
     const period = query.period || 'week';
-    const refDate = query.date ? new Date(`${query.date}T00:00:00.000Z`) : new Date();
+    const refDate = query.date ? new Date(`${query.date}T00:00:00.000Z`) : new Date(now);
     refDate.setUTCHours(0, 0, 0, 0);
 
     const { rangeStart, rangeEnd } = this.resolveDashboardRange(period, refDate);
 
-    const [courts, operatingHours, holidays, bookings, payments] = await Promise.all([
+    const [courts, operatingHours, holidays, bookings, payments, nextBookingsToday] = await Promise.all([
       this.prisma.court.findMany({
         where: { arenaId, isActive: true },
-        select: { id: true, name: true, sport: true },
+        select: { id: true, name: true, sport: true, hourlyRate: true },
         orderBy: { name: 'asc' },
       }),
       this.prisma.arenaOperatingHour.findMany({ where: { arenaId } }),
@@ -988,21 +989,51 @@ export class ArenasService {
       }),
       this.prisma.booking.findMany({
         where: { arenaId, startTime: { gte: rangeStart, lt: rangeEnd } },
-        select: { id: true, courtId: true, startTime: true, endTime: true, status: true, totalAmount: true },
+        select: {
+          id: true,
+          courtId: true,
+          startTime: true,
+          endTime: true,
+          status: true,
+          totalAmount: true,
+          customerName: true,
+          user: { select: { name: true, phone: true } },
+        },
       }),
       this.prisma.payment.findMany({
         where: { arenaId, status: 'COMPLETED', paidAt: { gte: rangeStart, lt: rangeEnd } },
         select: { amount: true, method: true, category: true },
       }),
+      // Próximas reservas a partir de agora
+      this.prisma.booking.findMany({
+        where: {
+          arenaId,
+          startTime: { gte: now },
+          status: { in: [BookingStatus.CONFIRMED, BookingStatus.RESERVED_LOCAL, BookingStatus.PENDING] },
+        },
+        take: 5,
+        orderBy: { startTime: 'asc' },
+        select: {
+          id: true,
+          startTime: true,
+          endTime: true,
+          status: true,
+          totalAmount: true,
+          customerName: true,
+          user: { select: { name: true } },
+          court: { select: { name: true } },
+        },
+      }),
     ]);
 
-    // Mapa de horário por dia da semana, e um Set das datas fechadas por feriado
-    // dentro do período — usados pra calcular o total de slots "vagáveis" por dia.
+    // 1. Cálculo de Dias Úteis Operacionais e Slots
     const scheduleByDay = new Map(operatingHours.map((h) => [h.dayOfWeek, h]));
     const holidayDates = new Set(holidays.map((h) => h.date.toISOString().slice(0, 10)));
     const slotMinutes = 60;
 
-    let totalSlotsPerCourt = 0; // total de slots "possíveis" no período, por quadra (todas as quadras têm o mesmo horário de funcionamento)
+    let totalSlotsPerCourt = 0;
+    let operationalDaysCount = 0;
+
     for (let cursor = new Date(rangeStart); cursor < rangeEnd; cursor.setUTCDate(cursor.getUTCDate() + 1)) {
       const dateKey = cursor.toISOString().slice(0, 10);
       if (holidayDates.has(dateKey)) continue;
@@ -1011,23 +1042,44 @@ export class ArenasService {
       const schedule = scheduleByDay.get(dayOfWeek);
       if (schedule && !schedule.isOpen) continue;
 
+      operationalDaysCount++;
       const openTimeStr = schedule?.openTime || '06:00';
       const closeTimeStr = schedule?.closeTime || '23:00';
       const [openHour, openMin] = openTimeStr.split(':').map(Number);
       const [closeHour, closeMin] = closeTimeStr.split(':').map(Number);
-      const openMinutesTotal = openHour * 60 + openMin;
-      const closeMinutesTotal = closeHour * 60 + closeMin;
 
-      totalSlotsPerCourt += Math.max(0, Math.floor((closeMinutesTotal - openMinutesTotal) / slotMinutes));
+      totalSlotsPerCourt += Math.max(0, Math.floor(((closeHour * 60 + closeMin) - (openHour * 60 + openMin)) / slotMinutes));
     }
 
+    // 2. Classificação de Reservas
     const activeBookings = bookings.filter((b) => b.status !== BookingStatus.CANCELLED);
     const cancelledBookings = bookings.filter((b) => b.status === BookingStatus.CANCELLED);
     const completedBookings = bookings.filter((b) => b.status === BookingStatus.COMPLETED);
 
+    // 3. Status Ao Vivo (Jogos acontecendo exatamente no horário atual)
+    const currentActiveBookings = bookings.filter(
+      (b) =>
+        b.status !== BookingStatus.CANCELLED &&
+        new Date(b.startTime) <= now &&
+        new Date(b.endTime) > now,
+    );
+
+    const liveOccupancy = {
+      totalCourts: courts.length,
+      courtsInUseCount: currentActiveBookings.length,
+      courtsFreeCount: Math.max(0, courts.length - currentActiveBookings.length),
+      currentMatches: currentActiveBookings.map((b) => ({
+        bookingId: b.id,
+        courtId: b.courtId,
+        client: b.customerName || b.user?.name || 'Cliente Balcão',
+        startTime: b.startTime,
+        endTime: b.endTime,
+      })),
+    };
+
+    // 4. Mapa de Ocupação por Quadra
     const courtsSummary = courts.map((court) => {
       const courtActiveBookings = activeBookings.filter((b) => b.courtId === court.id);
-      // Cada reserva ocupa 1+ slots dependendo da duração (ex: torneio de 2h = 2 slots de 1h)
       const bookedSlots = courtActiveBookings.reduce((sum, b) => {
         const durationMinutes = (b.endTime.getTime() - b.startTime.getTime()) / 60000;
         return sum + Math.max(1, Math.round(durationMinutes / slotMinutes));
@@ -1046,9 +1098,11 @@ export class ArenasService {
       };
     });
 
+    // 5. Métricas de Receita e Projeção
     const revenueByMethod: Record<string, number> = {};
     const revenueByCategory: Record<string, number> = {};
     let totalRevenue = 0;
+
     for (const payment of payments) {
       const amount = Number(payment.amount);
       totalRevenue += amount;
@@ -1056,22 +1110,57 @@ export class ArenasService {
       revenueByCategory[payment.category] = (revenueByCategory[payment.category] || 0) + amount;
     }
 
+    // Valor total reservado na grade no período (incluindo o que ainda vai ser pago)
+    const totalBookedValue = activeBookings.reduce((sum, b) => sum + Number(b.totalAmount || 0), 0);
+
+    // 6. Médias e Indicadores
+    const dailyAverageRevenue = operationalDaysCount > 0 ? Number((totalRevenue / operationalDaysCount).toFixed(2)) : 0;
+    const averageTicket = activeBookings.length > 0 ? Number((totalRevenue / activeBookings.length).toFixed(2)) : 0;
+    const cancellationRate = bookings.length > 0 ? Number(((cancelledBookings.length / bookings.length) * 100).toFixed(1)) : 0;
+
     return {
       arena: { id: arena.id, name: arena.name },
       period,
       rangeStart: rangeStart.toISOString().slice(0, 10),
-      rangeEnd: new Date(rangeEnd.getTime() - 86400000).toISOString().slice(0, 10), // inclusivo, pra exibição
+      rangeEnd: new Date(rangeEnd.getTime() - 86400000).toISOString().slice(0, 10),
+
+      // Bloco Ao Vivo
+      live: liveOccupancy,
+
+      // Próximos horários do dia
+      upcomingToday: nextBookingsToday.map((b) => ({
+        id: b.id,
+        courtName: b.court.name,
+        clientName: b.customerName || b.user?.name || 'Cliente Balcão',
+        startTime: b.startTime,
+        endTime: b.endTime,
+        totalAmount: b.totalAmount,
+        status: b.status,
+      })),
+
+      // Indicadores Gerais e Médias
+      kpis: {
+        dailyAverageRevenue,
+        averageTicket,
+        cancellationRate,
+        operationalDays: operationalDaysCount,
+        totalBookedValue: Number(totalBookedValue.toFixed(2)),
+        pendingRevenueToReceive: Number(Math.max(0, totalBookedValue - totalRevenue).toFixed(2)),
+      },
+
       bookings: {
         total: bookings.length,
         confirmed: activeBookings.length,
         cancelled: cancelledBookings.length,
         completed: completedBookings.length,
       },
+
       revenue: {
         total: Number(totalRevenue.toFixed(2)),
         byMethod: revenueByMethod,
         byCategory: revenueByCategory,
       },
+
       courts: courtsSummary,
     };
   }
