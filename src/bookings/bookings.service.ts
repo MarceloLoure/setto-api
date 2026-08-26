@@ -48,7 +48,7 @@ export class BookingsService {
               startTime: start,
               endTime: end,
               totalAmount: calculatedTotal,
-              status: BookingStatus.CONFIRMED,
+              status: BookingStatus.PENDING,
             },
             include: {
               court: { select: { id: true, name: true, sport: true } },
@@ -115,7 +115,7 @@ export class BookingsService {
               startTime: start,
               endTime: end,
               totalAmount: calculatedTotal,
-              status: BookingStatus.CONFIRMED,
+              status: BookingStatus.PENDING,
             },
             include: {
               court: { select: { id: true, name: true, sport: true } },
@@ -130,7 +130,7 @@ export class BookingsService {
                 bookingId: newBooking.id,
                 userId: pId,
                 pricePaid: dto.pricePerPlayer || 0,
-                status: ParticipantStatus.CONFIRMED,
+                status: ParticipantStatus.PENDING,
               })),
             });
           }
@@ -480,6 +480,15 @@ export class BookingsService {
             city: true,
           },
         },
+        payment: {
+          select: {
+            id: true,
+            amount: true,
+            method: true,
+            status: true,
+            paidAt: true,
+          },
+        },
         participants: {
           select: {
             id: true,
@@ -503,6 +512,7 @@ export class BookingsService {
       const clientDisplayName = isGuest ? b.customerName || 'Cliente Balcão' : b.user?.name;
       const clientPhone = isGuest ? null : b.user?.phone;
       const clientEmail = isGuest ? null : b.user?.email;
+      const isPaid = !!b.payment;
 
       return {
         ...b,
@@ -510,6 +520,7 @@ export class BookingsService {
         clientPhone,
         clientEmail,
         isGuestBooking: isGuest,
+        isPaid,
         confirmedParticipantsCount: b.participants?.length || 0,
       };
     });

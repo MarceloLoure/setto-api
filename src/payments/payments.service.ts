@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { BookingStatus, ParticipantStatus } from '@prisma/client';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { PaymentCategory, Role } from '@prisma/client';
 
@@ -13,7 +14,7 @@ export class PaymentsService {
   constructor(private prisma: PrismaService) {}
 
   async create(user: any, dto: CreatePaymentDto) {
-    // 1. Valida se o usuário pode lançar pagamentos para essa arena (ADMIN ou RECEPTIONIST)
+
     if (user.role !== Role.SUPERADMIN) {
       const dbUser = await this.prisma.user.findUnique({
         where: { id: user.id },
@@ -33,36 +34,64 @@ export class PaymentsService {
       }
     }
 
-    // 2. Se o pagamento for vinculado a um agendamento
     if (dto.bookingId) {
-      const booking = await this.prisma.booking.findUnique({
-        where: { id: dto.bookingId },
-        include: { payment: true },
+      return this.prisma.$transaction(async (tx) => {
+        const booking = await tx.booking.findUnique({
+          where: { id: dto.bookingId },
+          include: { payment: true },
+        });
+
+        if (!booking) {
+          throw new NotFoundException('Agendamento não encontrado.');
+        }
+
+        if (booking.payment) {
+          throw new BadRequestException('Este agendamento já possui um pagamento registrado.');
+        }
+
+        // Cria o pagamento liquidado
+        const payment = await tx.payment.create({
+          data: {
+            description: dto.description,
+            amount: dto.amount,
+            method: dto.method,
+            category: PaymentCategory.BOOKING,
+            status: 'COMPLETED',
+            paidAt: new Date(),
+            arenaId: dto.arenaId,
+            bookingId: dto.bookingId,
+            userId: dto.userId || booking.userId || null,
+            createdById: user.id,
+          },
+          include: {
+            booking: { select: { id: true, startTime: true, court: { select: { name: true } } } },
+            user: { select: { id: true, name: true, email: true } },
+            createdBy: { select: { id: true, name: true } },
+          },
+        });
+
+        await tx.booking.update({
+          where: { id: dto.bookingId },
+          data: { status: BookingStatus.CONFIRMED },
+        });
+
+        return payment;
       });
-
-      if (!booking) {
-        throw new NotFoundException('Agendamento não encontrado.');
-      }
-
-      if (booking.payment) {
-        throw new BadRequestException('Este agendamento já possui um pagamento registrado.');
-      }
     }
 
-    // 3. Cria a entrada financeira no banco
     return this.prisma.payment.create({
       data: {
         description: dto.description,
         amount: dto.amount,
         method: dto.method,
-        category: dto.bookingId ? PaymentCategory.BOOKING : dto.category || PaymentCategory.OTHER,
+        category: dto.category || PaymentCategory.OTHER,
+        status: BookingStatus.COMPLETED,
+        paidAt: new Date(),
         arenaId: dto.arenaId,
-        bookingId: dto.bookingId || null,
         userId: dto.userId || null,
         createdById: user.id,
       },
       include: {
-        booking: { select: { id: true, startTime: true, court: { select: { name: true } } } },
         user: { select: { id: true, name: true, email: true } },
         createdBy: { select: { id: true, name: true } },
       },
