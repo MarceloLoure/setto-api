@@ -138,7 +138,13 @@ export class PlatformPlansService {
     });
     if (!subscription) throw new NotFoundException('Nenhuma assinatura ativa encontrada para esta arena.');
 
-    if (!subscription.asaasSubscriptionId.startsWith('pending:')) {
+    // --- ALTERAÇÃO AQUI ---
+    // Adicionamos o check `subscription.asaasSubscriptionId` para garantir que o TypeScript
+    // entenda que a propriedade não é null/undefined antes de usar métodos de string.
+    if (
+      subscription.asaasSubscriptionId &&
+      !subscription.asaasSubscriptionId.startsWith('pending:')
+    ) {
       await this.asaasService.cancelSubscription(subscription.asaasSubscriptionId);
     }
 
