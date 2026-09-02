@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Post,
   HttpCode,
   HttpStatus,
   Param,
@@ -27,6 +28,8 @@ import {
 } from './dto/admin-query.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { SuperAdminService } from './super-admin.service';
+import { CreateArenaInviteDto } from './dto/create-arena-invite.dto';
+import { ArenaInvitesService } from 'src/modules/invite/arena-invites.service';
 
 @ApiTags('Super Admin (Painel Web)')
 @Controller('super-admin')
@@ -34,7 +37,10 @@ import { SuperAdminService } from './super-admin.service';
 @Roles(Role.SUPERADMIN)
 @ApiBearerAuth()
 export class SuperAdminController {
-  constructor(private readonly superAdminService: SuperAdminService) {}
+  constructor(
+    private readonly superAdminService: SuperAdminService,
+    private readonly arenaInvitesService: ArenaInvitesService,
+  ) {}
 
   @Get('overview')
   @ApiOperation({ summary: 'Métricas gerais e faturamento total da plataforma' })
@@ -78,5 +84,12 @@ export class SuperAdminController {
     @CurrentUser('id') superAdminId: string,
   ) {
     return this.superAdminService.deleteUser(userId, superAdminId);
+  }
+
+  @Post()
+  @ApiOperation({ summary: 'Gerar token e enviar e-mail de pré-registro de arena' })
+  @ApiResponse({ status: 201, description: 'E-mail enviado com sucesso.' })
+  async createInvite(@Body() dto: CreateArenaInviteDto) {
+    return this.arenaInvitesService.createAndSendInvite(dto);
   }
 }

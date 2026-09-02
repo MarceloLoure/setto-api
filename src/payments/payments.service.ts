@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { BookingStatus, ParticipantStatus } from '@prisma/client';
+import { BookingStatus, ParticipantStatus, PaymentStatus } from '@prisma/client';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { PaymentCategory, Role } from '@prisma/client';
 
@@ -56,7 +56,7 @@ export class PaymentsService {
             amount: dto.amount,
             method: dto.method,
             category: PaymentCategory.BOOKING,
-            status: 'COMPLETED',
+            status: PaymentStatus.COMPLETED,
             paidAt: new Date(),
             arenaId: dto.arenaId,
             bookingId: dto.bookingId,
@@ -85,7 +85,7 @@ export class PaymentsService {
         amount: dto.amount,
         method: dto.method,
         category: dto.category || PaymentCategory.OTHER,
-        status: BookingStatus.COMPLETED,
+        status: PaymentStatus.COMPLETED,
         paidAt: new Date(),
         arenaId: dto.arenaId,
         userId: dto.userId || null,

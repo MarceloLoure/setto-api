@@ -5,78 +5,317 @@ import {
   NotFoundException,
   ForbiddenException
 } from '@nestjs/common';
-import { BookingType, ParticipantStatus, Prisma } from '@prisma/client';
+import { BookingType, ParticipantStatus, Prisma, PaymentCategory, PaymentMethod, PaymentStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
 import { BookingFilterDto } from './dto/booking-filter.dto';
 import { BookingStatus, Role } from '@prisma/client';
 import { CreateAppBookingDto } from './dto/create-app-booking.dto';
 import { ManagerBookingFilterDto } from './dto/manager-booking-filter.dto';
+import { CreateBookingCheckoutDto } from './dto/create-booking-checkout.dto';
+import { AsaasService } from '../asaas/asaas.service';
+import { brazilTimeToUtcDate, parseAppMobileTimestamp } from '../common/utils/timezone.util';
 
 @Injectable()
 export class BookingsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private asaasService: AsaasService,
+  ) {}
 
   
   // -------------------------------------------------------------
   // 1. FLUXO DO APP MOBILE (Atleta - Sem trava de impersonação)
   // -------------------------------------------------------------
   async createAppBooking(user: any, dto: CreateAppBookingDto) {
-    const start = new Date(dto.startTime);
-    const end = new Date(dto.endTime);
+    const start = parseAppMobileTimestamp(dto.startTime);
+    const end = parseAppMobileTimestamp(dto.endTime);
     const now = new Date();
 
     this.validateTimeWindow(start, end, now);
-
     const durationInHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
 
+    // 1. Define a expiração para exatamente 30 minutos a partir de agora
+    const expiresAt = new Date(now.getTime() + 30 * 60 * 1000);
+
+    // 2. Transação rápida de banco: valida vaga e cria a reserva com status PENDING + TTL
+    let newBooking: any;
+    let court: any;
+
     try {
-      return await this.prisma.$transaction(
+      ({ newBooking, court } = await this.prisma.$transaction(
         async (tx) => {
           const court = await this.fetchAndValidateCourtAvailability(tx, dto.courtId, start, end);
 
           const hourlyRate = Number(court.hourlyRate);
           const calculatedTotal = Number((durationInHours * hourlyRate).toFixed(2));
 
-          return tx.booking.create({
+          const newBooking = await tx.booking.create({
             data: {
               type: BookingType.FREE_PLAY,
               courtId: court.id,
               arenaId: court.arenaId,
               userId: user.id,
-              customerName: null,
               startTime: start,
               endTime: end,
               totalAmount: calculatedTotal,
               status: BookingStatus.PENDING,
+              expiresAt: expiresAt,
             },
             include: {
+              arena: true,
               court: { select: { id: true, name: true, sport: true } },
-              arena: { select: { id: true, name: true } },
             },
           });
+
+          return { newBooking, court };
         },
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
           maxWait: 5_000,
           timeout: 10_000,
         },
-      );
-    } catch (error: any) {
+      ));
+    } catch (error) {
       this.handlePrismaConflictError(error);
+    }
+
+    // 3. Valida e garante a criação da Subconta Asaas da Arena (Onboarding dinâmico)
+    let arenaWalletId = newBooking.arena.asaasWalletId;
+
+    if (!arenaWalletId) {
+      const document = newBooking.arena.cnpj || newBooking.arena.cpf;
+      if (!document) {
+        await this.prisma.booking.delete({ where: { id: newBooking.id } });
+        throw new BadRequestException('A arena precisa cadastrar o CPF/CNPJ para aceitar pagamentos online.');
+      }
+
+      try {
+        // Monta o payload completo de subconta conforme a spec da API do Asaas
+        const subaccountPayload = {
+          name: newBooking.arena.name,
+          email: newBooking.arena.email || `arena_${newBooking.arena.id}@suaplataforma.com.br`,
+          cpfCnpj: document,
+          companyType: newBooking.arena.companyType || 'MEI',
+          phone: newBooking.arena.phone || '1133333333',
+          mobilePhone: newBooking.arena.mobilePhone || newBooking.arena.phone || '11999999999',
+          incomeValue: Number(newBooking.arena.incomeValue || 10000),
+          address: newBooking.arena.address || 'Não informado',
+          addressNumber: newBooking.arena.number || 'S/N',
+          complement: newBooking.arena.complement || undefined,
+          province: newBooking.arena.neighborhood || 'Centro',
+          postalCode: newBooking.arena.zipCode || '01001000',
+          webhooks: [
+            {
+              name: `Webhook Cobranças — ${newBooking.arena.name}`,
+              url: `${ process.env.BACKEND_URL}/payments/webhook/asaas`,
+              email: newBooking.arena.email || user.email,
+              sendType: 'SEQUENTIALLY',
+              interrupted: false,
+              enabled: true,
+              apiVersion: 3,
+              authToken: process.env.ASAAS_WEBHOOK_SECRET || 'default-secret',
+              events: ['PAYMENT_CREATED', 'PAYMENT_UPDATED', 'PAYMENT_CONFIRMED', 'PAYMENT_RECEIVED'],
+            },
+          ],
+        };
+
+        console.log(subaccountPayload)
+
+        const subaccount = await this.asaasService.createSubaccount(subaccountPayload);
+
+        // O Asaas retorna `walletId` (chave de split) e `id` (account ID)
+        arenaWalletId = subaccount.walletId || subaccount.id;
+
+        // Atualiza a arena no banco com os IDs gerados
+        await this.prisma.arena.update({
+          where: { id: newBooking.arenaId },
+          data: {
+            asaasAccountId: subaccount.id,
+            asaasWalletId: arenaWalletId,
+          },
+        });
+      } catch (error) {
+        // Desfaz a pré-reserva criada na transaction em caso de erro no Asaas
+        await this.prisma.booking.delete({ where: { id: newBooking.id } }).catch(() => {});
+        throw error;
+      }
+    }
+
+    // 4. Garante Customer Asaas do Usuário
+    let asaasCustomerId = (await this.prisma.user.findUnique({ where: { id: user.id } }))?.asaasCustomerId;
+    if (!asaasCustomerId) {
+      const customer = await this.asaasService.createCustomer({
+        name: user.name,
+        email: user.email,
+        cpfCnpj: user.cpf || undefined,
+        phone: user.phone || undefined,
+        externalReference: user.id,
+      });
+      asaasCustomerId = customer.id;
+      await this.prisma.user.update({ where: { id: user.id }, data: { asaasCustomerId } });
+    }
+
+    // 5. Calcula splits (Plataforma vs Arena)
+    const platformFeePercent = Number(newBooking.arena.platformFeePercent ?? 5);
+    const arenaSharePercent = Number((100 - platformFeePercent).toFixed(2));
+    const dueDate = new Date().toISOString().slice(0, 10);
+
+    try {
+      // 6. Cria registro de Payment local
+      const localPayment = await this.prisma.payment.create({
+        data: {
+          description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
+          amount: newBooking.totalAmount,
+          method: dto.billingType === 'PIX' ? PaymentMethod.PIX : PaymentMethod.CREDIT_CARD,
+          category: PaymentCategory.BOOKING,
+          status: PaymentStatus.PENDING,
+          arenaId: newBooking.arenaId,
+          bookingId: newBooking.id,
+          userId: newBooking.userId,
+          createdById: user.id,
+        },
+      });
+
+      // 7. Emite cobrança no Asaas
+      const asaasPayment = await this.asaasService.createSplitPayment({
+        customer: asaasCustomerId!,
+        billingType: dto.billingType,
+        value: Number(newBooking.totalAmount),
+        dueDate,
+        description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
+        externalReference: `booking:${newBooking.id}`,
+        split: [{ walletId: arenaWalletId, percentualValue: arenaSharePercent }]
+      });
+
+      await this.prisma.payment.update({
+        where: { id: localPayment.id },
+        data: { asaasPaymentId: asaasPayment.id },
+      });
+
+      // 8. Retorna a reserva e a cobrança correspondente (Pix QrCode ou URL do Cartão/Invoice)
+      let paymentDetails: any = { asaasPaymentId: asaasPayment.id, billingType: dto.billingType };
+      if (dto.billingType === 'PIX') {
+        const qrCode = await this.asaasService.getPixQrCode(asaasPayment.id);
+        paymentDetails.pix = qrCode;
+      } else {
+        paymentDetails.invoiceUrl = asaasPayment.invoiceUrl;
+      }
+
+      return {
+        booking: newBooking,
+        payment: paymentDetails,
+        expiresAt: expiresAt.toISOString(),
+      };
+    } catch (error) {
+      // Rollback manual da reserva caso a integração do Asaas falhe
+      await this.prisma.booking.delete({ where: { id: newBooking.id } }).catch(() => {});
+      throw error;
     }
   }
 
   // -------------------------------------------------------------
-  // 2. FLUXO DO PAINEL WEB / MANAGER (Admin, Staff e Professores)
+  // 1.1 CHECKOUT ONLINE (Pix/Cartão com split) — Vertical 1
   // -------------------------------------------------------------
+  async initiateCheckout(user: any, bookingId: string, dto: CreateBookingCheckoutDto) {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { arena: true, payment: true },
+    });
+
+    if (!booking) throw new NotFoundException('Agendamento não encontrado.');
+    if (booking.userId !== user.id) {
+      throw new ForbiddenException('Você só pode pagar reservas feitas por você.');
+    }
+    if (booking.status !== BookingStatus.PENDING) {
+      throw new BadRequestException('Esta reserva não está mais aguardando pagamento.');
+    }
+    if (booking.payment) {
+      throw new BadRequestException('Esta reserva já possui um pagamento registrado.');
+    }
+    if (!booking.arena.asaasWalletId) {
+      throw new BadRequestException('Esta arena ainda não está habilitada para receber pagamentos online.');
+    }
+
+    let asaasCustomerId = (await this.prisma.user.findUnique({ where: { id: user.id } }))?.asaasCustomerId;
+    if (!asaasCustomerId) {
+      const customer = await this.asaasService.createCustomer({
+        name: user.name,
+        email: user.email,
+        cpfCnpj: user.cpf || undefined,
+        phone: user.phone || undefined,
+        externalReference: user.id,
+      });
+      asaasCustomerId = customer.id;
+      await this.prisma.user.update({ where: { id: user.id }, data: { asaasCustomerId } });
+    }
+
+    if (!asaasCustomerId) {
+      throw new BadRequestException('Não foi possível obter o cliente Asaas do usuário.');
+    }
+
+    const platformFeePercent = Number(booking.arena.platformFeePercent ?? 5);
+    const arenaSharePercent = Number((100 - platformFeePercent).toFixed(2));
+
+    let localPayment;
+    try {
+      localPayment = await this.prisma.payment.create({
+        data: {
+          description: `Reserva ${booking.id} — ${booking.arena.name}`,
+          amount: booking.totalAmount,
+          method: dto.billingType === 'PIX' ? PaymentMethod.PIX : PaymentMethod.CREDIT_CARD,
+          category: PaymentCategory.BOOKING,
+          status: PaymentStatus.PENDING,
+          arenaId: booking.arenaId,
+          bookingId: booking.id,
+          userId: booking.userId,
+          createdById: user.id,
+        },
+      });
+    } catch (error: any) {
+      if (error?.code === 'P2002') {
+        throw new ConflictException('Já existe uma cobrança em andamento para esta reserva.');
+      }
+      throw error;
+    }
+
+    const dueDate = new Date().toISOString().slice(0, 10);
+    let asaasPayment;
+    try {
+      asaasPayment = await this.asaasService.createSplitPayment({
+        customer: asaasCustomerId,
+        billingType: dto.billingType,
+        value: Number(booking.totalAmount),
+        dueDate,
+        description: `Reserva ${booking.id} — ${booking.arena.name}`,
+        externalReference: `booking:${booking.id}`,
+        split: [{ walletId: booking.arena.asaasWalletId, percentualValue: arenaSharePercent }],
+      });
+    } catch (error) {
+      await this.prisma.payment.delete({ where: { id: localPayment.id } }).catch(() => {});
+      throw error;
+    }
+
+    await this.prisma.payment.update({
+      where: { id: localPayment.id },
+      data: { asaasPaymentId: asaasPayment.id },
+    });
+
+    if (dto.billingType === 'PIX') {
+      const qrCode = await this.asaasService.getPixQrCode(asaasPayment.id);
+      return { asaasPaymentId: asaasPayment.id, billingType: dto.billingType, pix: qrCode };
+    }
+
+    return { asaasPaymentId: asaasPayment.id, billingType: dto.billingType, invoiceUrl: asaasPayment.invoiceUrl };
+  }
+
+
   async createAdminBooking(user: any, dto: CreateBookingDto) {
     const start = new Date(dto.startTime);
     const end = new Date(dto.endTime);
     const now = new Date();
 
     this.validateTimeWindow(start, end, now);
-
     const durationInHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
 
     try {
@@ -84,7 +323,6 @@ export class BookingsService {
         async (tx) => {
           const court = await this.fetchAndValidateCourtAvailability(tx, dto.courtId, start, end);
 
-          // Validação de permissão do Staff na Arena
           const isArenaStaff =
             court.arena.admins.some((a) => a.id === user.id) ||
             court.arena.staff.some((s) => s.id === user.id) ||
@@ -98,7 +336,6 @@ export class BookingsService {
           const hourlyRate = Number(court.hourlyRate);
           const calculatedTotal = Number((durationInHours * hourlyRate).toFixed(2));
 
-          // Criação da reserva principal
           const newBooking = await tx.booking.create({
             data: {
               type: dto.type || BookingType.FREE_PLAY,
@@ -123,7 +360,6 @@ export class BookingsService {
             },
           });
 
-          // Inclusão de participantes iniciais (se fornecidos)
           if (dto.participantIds && dto.participantIds.length > 0) {
             await tx.bookingParticipant.createMany({
               data: dto.participantIds.map((pId) => ({
@@ -168,9 +404,18 @@ export class BookingsService {
   }
 
   private async fetchAndValidateCourtAvailability(tx: any, courtId: string, start: Date, end: Date) {
-    const targetDateOnly = new Date(start);
-    targetDateOnly.setUTCHours(0, 0, 0, 0);
-    const dayOfWeek = start.getUTCDay();
+    // Extrai dia da semana e "dia calendário" no horário de Brasília — usar
+    // toLocaleString + reparse (em vez de getUTCDay/setUTCHours direto em
+    // `start`) evita erro perto da virada de dia: um `start` de madrugada em
+    // UTC pode já ser o dia anterior em Brasília, e vice-versa.
+    const localStartStr = start.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
+    const localStartDate = new Date(localStartStr);
+    const dayOfWeek = localStartDate.getDay();
+
+    const year = localStartDate.getFullYear();
+    const month = String(localStartDate.getMonth() + 1).padStart(2, '0');
+    const day = String(localStartDate.getDate()).padStart(2, '0');
+    const targetDateOnly = new Date(`${year}-${month}-${day}T00:00:00.000Z`);
 
     const court = await tx.court.findUnique({
       where: { id: courtId },
@@ -205,17 +450,15 @@ export class BookingsService {
 
     const openTimeStr = schedule?.openTime || '06:00';
     const closeTimeStr = schedule?.closeTime || '23:00';
-    const [openH, openM] = openTimeStr.split(':').map(Number);
-    const [closeH, closeM] = closeTimeStr.split(':').map(Number);
 
-    const scheduleOpen = new Date(start);
-    scheduleOpen.setUTCHours(openH, openM, 0, 0);
-
-    const scheduleClose = new Date(start);
-    scheduleClose.setUTCHours(closeH, closeM, 0, 0);
+    // openTime/closeTime são cadastrados em horário local de Brasília pelo
+    // dono da arena — precisam ser convertidos pra UTC antes de comparar
+    // com `start`/`end`, que já chegam em UTC real.
+    const scheduleOpen = brazilTimeToUtcDate(start, openTimeStr);
+    const scheduleClose = brazilTimeToUtcDate(start, closeTimeStr);
 
     if (start < scheduleOpen || end > scheduleClose) {
-      throw new BadRequestException(`Horário fora de funcionamento (${openTimeStr} às ${closeTimeStr}).`);
+      throw new BadRequestException(`Horário fora de funcionamento (${openTimeStr} às ${closeTimeStr}, horário de Brasília).`);
     }
 
     const conflictingBooking = await tx.booking.findFirst({

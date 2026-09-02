@@ -71,6 +71,7 @@ enum PaymentCategory {
 enum PaymentStatus {
   COMPLETED
   PENDING
+  CANCELLED
   REFUNDED
 }
 
@@ -86,6 +87,26 @@ enum ParticipantStatus {
   PENDING
   CONFIRMED
   CANCELLED
+}
+
+enum PlanBillingCycle {
+  MONTHLY
+  QUARTERLY
+  SEMIANNUALLY
+  ANNUALLY
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PENDING
+  OVERDUE
+  CANCELLED
+  EXPIRED
+}
+
+enum SplitType {
+  PERCENTAGE
+  FIXED
 }
 
 enum BannerPosition {
@@ -131,6 +152,7 @@ model User {
 
   googleId      String?       @unique
   appleId       String?       @unique
+  asaasCustomerId String?     @unique // cus_xxxxxx — criado no 1º checkout online do atleta
   
   arenasManaged Arena[]  @relation("ArenaAdmins")
   activeArenaId String?
@@ -156,13 +178,23 @@ model User {
   coachBookings Booking[] @relation("CoachBookings")
   participations BookingParticipant[]
 
+  memberships AthleteMembership[]
+
   @@map("users")
 }
 
 model Arena {
   id          String        @id @default(uuid())
   name        String
-  cnpj       String?       @unique // CNPJ
+  cnpj         String?  @unique // CNPJ ou CPF principal
+  cpf          String?  @unique // Adicionado para suportar arenas em nome de pessoa física
+  companyType  String?  @default("MEI") // MEI, LIMITED, INDIVIDUAL, ASSOCIATION, etc.
+  incomeValue  Decimal? @default(10000.00) @db.Decimal(10, 2) // Faturamento estimado exigido pelo Asaas
+
+  phone        String?
+  mobilePhone  String?
+
+  email        String?  // E-mail comercial da arena para notificações/subconta
 
   address      String?       
   number       String?      
@@ -195,6 +227,14 @@ model Arena {
   invites   StaffInvite[]
 
   payments Payment[]
+
+  // Integração financeira Asaas
+  asaasAccountId      String?               @unique // ID da subconta no Asaas (ex: cus_xxxxxx)
+  asaasWalletId       String?               @unique // ID da carteira no Asaas, usada no split
+  platformFeePercent  Decimal?              @default(5.00) @db.Decimal(5, 2)
+  isPayoutEnabled     Boolean               @default(false)
+  platformSubs        ArenaSubscription[]
+  membershipPlans     ArenaMembershipPlan[]
 
   @@map("arenas")
 }
@@ -268,6 +308,8 @@ model Booking {
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
 
+  expiresAt   DateTime?
+
   court            Court             @relation(fields: [courtId], references: [id])
   arena            Arena             @relation(fields: [arenaId], references: [id])
   user             User?             @relation(fields: [userId], references: [id])
@@ -320,6 +362,9 @@ model Payment {
   category      PaymentCategory @default(OTHER)
   status        PaymentStatus   @default(COMPLETED)
   paidAt        DateTime        @default(now())
+
+  // Referência da cobrança na Asaas (pay_xxxxxx), quando gerada via checkout online
+  asaasPaymentId String?        @unique
 
   // Vinculo com a Arena
   arenaId       String
@@ -461,4 +506,95 @@ model HomeSection {
   updatedAt DateTime        @updatedAt
 
   @@map("home_sections")
+}
+// ==========================================
+// MÓDULO FINANCEIRO — ASAAS
+// ==========================================
+
+model PlatformPlan {
+  id              String            @id @default(uuid())
+  name            String            // ex: "Starter", "Pro"
+  description     String?
+  price           Decimal           @db.Decimal(10, 2)
+  billingCycle    PlanBillingCycle  @default(MONTHLY)
+  maxCourts       Int?              // Limite de quadras (null = ilimitado)
+  maxStaff        Int?
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  subscriptions   ArenaSubscription[]
+  registrationTokens  ArenaRegistrationToken[]
+
+  @@map("platform_plans")
+}
+
+model ArenaSubscription {
+  id                  String    @id @default(uuid())
+  arenaId             String
+  platformPlanId      String    // <-- Ajuste o nome do campo para bater com a relação abaixo
+  asaasSubscriptionId String?   @unique // sub_xxxxxx (opcional para aceitar nulo)
+  status              String    @default("ACTIVE")
+  currentCycleStart   DateTime? @default(now())
+  currentCycleEnd     DateTime?
+  cancelledAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  arena        Arena        @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  platformPlan PlatformPlan @relation(fields: [platformPlanId], references: [id])
+
+  @@map("arena_subscriptions")
+}
+
+model ArenaMembershipPlan {
+  id              String            @id @default(uuid())
+  arenaId         String
+  name            String            // ex: "Mensalista Ouro"
+  description     String?
+  price           Decimal           @db.Decimal(10, 2)
+  billingCycle    PlanBillingCycle  @default(MONTHLY)
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  arena           Arena             @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  memberships     AthleteMembership[]
+
+  @@map("arena_membership_plans")
+}
+
+model AthleteMembership {
+  id                     String              @id @default(uuid())
+  arenaMembershipPlanId  String
+  userId                 String
+  asaasSubscriptionId    String              @unique // sub_xxxxxx
+  status                 SubscriptionStatus  @default(PENDING)
+  currentCycleStart      DateTime
+  currentCycleEnd        DateTime
+  cancelledAt            DateTime?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+
+  plan                   ArenaMembershipPlan @relation(fields: [arenaMembershipPlanId], references: [id], onDelete: Cascade)
+  user                   User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("athlete_memberships")
+}
+
+model ArenaRegistrationToken {
+  id              String       @id @default(uuid())
+  email           String
+  token      String       @unique @default(uuid())
+  planId          String
+  plan            PlatformPlan @relation(fields: [planId], references: [id])
+  paymentId       String?      // ID da transação no Asaas (para conciliação)
+  isUsed          Boolean      @default(false)
+  usedAt          DateTime?
+  expiresAt       DateTime
+  createdAt       DateTime     @default(now())
+
+  @@index([token])
+  @@index([email])
+  @@map("arena_registration_tokens")
 }

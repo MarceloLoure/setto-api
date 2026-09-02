@@ -1,5 +1,10 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsDateString, IsNotEmpty, IsUUID } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsDateString, IsEnum, IsNotEmpty, IsOptional, IsUUID, ValidateIf } from 'class-validator';
+
+export enum AsaasBillingType {
+  PIX = 'PIX',
+  CREDIT_CARD = 'CREDIT_CARD',
+}
 
 export class CreateAppBookingDto {
   @ApiProperty({ example: 'uuid-da-quadra' })
@@ -16,4 +21,9 @@ export class CreateAppBookingDto {
   @IsDateString()
   @IsNotEmpty()
   endTime: string;
+
+  @ApiProperty({ enum: AsaasBillingType, example: AsaasBillingType.PIX })
+  @IsEnum(AsaasBillingType, { message: 'billingType deve ser PIX ou CREDIT_CARD' })
+  @IsNotEmpty()
+  billingType: AsaasBillingType;
 }

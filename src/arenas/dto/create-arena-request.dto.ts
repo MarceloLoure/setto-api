@@ -1,50 +1,57 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+import { IsNotEmpty, IsOptional, IsString, IsUUID } from 'class-validator';
 
 export class CreateArenaRequestDto {
+  @ApiProperty({ 
+    example: 'c0a80101-0000-0000-0000-000000000001', 
+    description: 'Token de convite gerado após a compra do plano' 
+  })
+  @IsUUID('4', { message: 'Token de convite inválido.' })
+  @IsNotEmpty({ message: 'O token de convite é obrigatório.' })
+  token: string;
+
   @ApiProperty({ example: 'Arena Beach Social Londrina' })
   @IsString()
-  @IsNotEmpty({ message: 'O nome da arena é obrigatório' })
+  @IsNotEmpty()
   name: string;
 
-  @ApiPropertyOptional({ example: '12.345.678/0001-90' })
+  @ApiProperty({ example: '12.345.678/0001-90', required: false })
   @IsString()
   @IsOptional()
   cnpj?: string;
 
-  @ApiPropertyOptional({ example: 'Av. Madre Leônia Milito' })
+  @ApiProperty({ example: 'Av. Madre Leônia Milito' })
   @IsString()
-  @IsOptional()
-  address?: string;
+  @IsNotEmpty()
+  address: string;
 
-  @ApiPropertyOptional({ example: '1500' })
+  @ApiProperty({ example: '1500' })
   @IsString()
-  @IsOptional()
-  number?: string;
+  @IsNotEmpty()
+  number: string;
 
-  @ApiPropertyOptional({ example: 'Bloco A' })
+  @ApiProperty({ example: 'Bloco A', required: false })
   @IsString()
   @IsOptional()
   complement?: string;
 
-  @ApiPropertyOptional({ example: 'Gleba Fazenda Palhano' })
+  @ApiProperty({ example: 'Gleba Palhano' })
   @IsString()
-  @IsOptional()
-  neighborhood?: string;
+  @IsNotEmpty()
+  neighborhood: string;
 
-  @ApiPropertyOptional({ example: '86050-270' })
+  @ApiProperty({ example: '86050-270' })
   @IsString()
-  @IsOptional()
-  @Matches(/^\d{5}-?\d{3}$/, { message: 'CEP em formato inválido' })
-  zipCode?: string;
+  @IsNotEmpty()
+  zipCode: string;
 
   @ApiProperty({ example: 'Londrina' })
   @IsString()
-  @IsNotEmpty({ message: 'A cidade é obrigatória' })
+  @IsNotEmpty()
   city: string;
 
   @ApiProperty({ example: 'PR' })
   @IsString()
-  @IsNotEmpty({ message: 'O estado é obrigatório' })
+  @IsNotEmpty()
   state: string;
 }

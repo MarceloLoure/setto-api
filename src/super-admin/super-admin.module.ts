@@ -7,15 +7,23 @@ import { ManagerBookingController } from './manager-booking.controller';
 import { ManagerArenaController } from './manager-arena.controller';
 import { ManagerHomeController } from './manager-home.controller';
 import { HomeModule } from 'src/home/home.module';
+import { PlatformPlansService } from './platform-plans.service';
+import { PlatformPlansController } from './platform-plans.controller';
+import { MailModule } from 'src/email/mail.module';
+import { ArenaInvitesService } from 'src/modules/invite/arena-invites.service';
+import { PublicInvitesController } from 'src/modules/public/public-register-admin.controller';
 
 @Module({
-  imports: [ArenasModule, BookingsModule, HomeModule],
+  imports: [ArenasModule, BookingsModule, HomeModule, MailModule],
   controllers: [
     SuperAdminController,
     ManagerArenaController,
     ManagerBookingController,
-    ManagerHomeController
+    ManagerHomeController,
+    PlatformPlansController,
+    PublicInvitesController
   ],
-  providers: [SuperAdminService]
+  providers: [SuperAdminService, PlatformPlansService, ArenaInvitesService],
+  exports: [PlatformPlansService]
 })
 export class SuperAdminModule {}

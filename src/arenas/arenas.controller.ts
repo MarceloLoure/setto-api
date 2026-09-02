@@ -37,6 +37,7 @@ import { UpdateArenaDto } from './dto/update-arena.dto';
 import { FindArenaAvailabilityQueryDto } from './dto/find-arena-availability-query.dto';
 import { CreateHolidayDto, UpdateOperatingHoursDto } from './dto/update-operating-hours.dto';
 import { DashboardSummaryQueryDto } from './dto/dashboard-summary-query.dto';
+import { SubscriptionGuard } from '../asaas/guards/subscription.guard';
 
 @ApiTags('Arenas')
 @Controller('arenas')
@@ -46,14 +47,28 @@ export class ArenasController {
   @Post('become-admin')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Cadastrar nova arena e promover usuário para ARENA_ADMIN' })
-  @ApiResponse({ status: 201, description: 'Arena cadastrada e usuário promovido com sucesso.' })
+  @ApiOperation({ summary: 'Cadastrar nova arena via token de convite e promover usuário para ARENA_ADMIN' })
+  @ApiResponse({ status: 201, description: 'Arena cadastrada, plano vinculado e usuário promovido.' })
+  @ApiResponse({ status: 400, description: 'Token de convite expirado ou já utilizado.' })
+  @ApiResponse({ status: 404, description: 'Token de convite não encontrado.' })
   @ApiResponse({ status: 409, description: 'CNPJ já cadastrado.' })
   becomeArenaAdmin(
     @CurrentUser('id') currentUserId: string,
     @Body() dto: CreateArenaRequestDto,
   ) {
     return this.arenasService.becomeArenaAdmin(currentUserId, dto);
+  }
+
+  @Post(':id/asaas/retry-onboarding')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ARENA_ADMIN, Role.SUPERADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Tentar novamente o onboarding financeiro (subconta Asaas) da arena' })
+  @ApiResponse({ status: 200, description: 'Onboarding refeito com sucesso.' })
+  @ApiResponse({ status: 400, description: 'Erro ao tentar reprocessar o onboarding.' })
+  @ApiResponse({ status: 403, description: 'Acesso negado caso o usuário não seja administrador da arena.' })
+  retryAsaasOnboarding(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.arenasService.retryAsaasOnboarding(id, user);
   }
 
   @Get()
@@ -116,7 +131,7 @@ export class ArenasController {
   }
 
   @Patch(':id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard, SubscriptionGuard)
   @Roles(Role.ARENA_ADMIN, Role.SUPERADMIN)
   @ApiBearerAuth()
   @UseInterceptors(

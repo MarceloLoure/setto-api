@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, Role, BookingStatus, Sport } from '@prisma/client';
@@ -16,16 +17,40 @@ import { UpdateArenaDto } from './dto/update-arena.dto';
 import { FindArenaAvailabilityQueryDto } from './dto/find-arena-availability-query.dto';
 import { UpdateOperatingHoursDto } from './dto/update-operating-hours.dto';
 import { DashboardSummaryQueryDto } from './dto/dashboard-summary-query.dto';
+import { AsaasService } from '../asaas/asaas.service';
+import { brazilTimeToUtcDate, utcDateToBrazilTimeLabel } from '../common/utils/timezone.util';
 
 @Injectable()
 export class ArenasService {
+  private readonly logger = new Logger(ArenasService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storageService: FirebaseStorageService,
     private readonly jwtService: JwtService,
+    private readonly asaasService: AsaasService,
   ) {}
 
   async becomeArenaAdmin(userId: string, dto: CreateArenaRequestDto) {
+    // 1. Validação prévia do Token de Convite
+    const inviteToken = await this.prisma.arenaRegistrationToken.findUnique({
+      where: { token: dto.token },
+      include: { plan: true },
+    });
+
+    if (!inviteToken) {
+      throw new NotFoundException('Token de convite não encontrado ou inválido.');
+    }
+
+    if (inviteToken.isUsed) {
+      throw new BadRequestException('Este token de convite já foi utilizado.');
+    }
+
+    if (new Date() > inviteToken.expiresAt) {
+      throw new BadRequestException('Este token de convite expirou.');
+    }
+
+    // 2. Validação prévia do Usuário
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
     });
@@ -34,8 +59,10 @@ export class ArenasService {
       throw new NotFoundException('Usuário não encontrado.');
     }
 
+    // Sanitização do CNPJ (remove tudo que não for dígito)
     const cleanedCnpj = dto.cnpj ? dto.cnpj.replace(/\D/g, '') : null;
 
+    // 3. Validação de Unicidade de CNPJ (Check antes da transação)
     if (cleanedCnpj) {
       const existingArena = await this.prisma.arena.findUnique({
         where: { cnpj: cleanedCnpj },
@@ -46,63 +73,221 @@ export class ArenasService {
       }
     }
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      const newArena = await tx.arena.create({
-        data: {
-          name: dto.name,
-          cnpj: cleanedCnpj,
-          address: dto.address,
-          number: dto.number,
-          complement: dto.complement,
-          neighborhood: dto.neighborhood,
-          zipCode: dto.zipCode ? dto.zipCode.replace(/\D/g, '') : null,
-          city: dto.city,
-          state: dto.state.toUpperCase(),
-          isActive: true,
-          admins: {
-            connect: { id: userId },
+    // 4. Execução da Transação no Banco
+    try {
+      const result = await this.prisma.$transaction(async (tx) => {
+        // Re-valida dentro da transação para evitar Race Conditions (2 requests simultâneos)
+        if (cleanedCnpj) {
+          const existingInTx = await tx.arena.findUnique({
+            where: { cnpj: cleanedCnpj },
+          });
+
+          if (existingInTx) {
+            throw new ConflictException('Já existe uma arena cadastrada com este CNPJ.');
+          }
+        }
+
+        // Criação da Arena
+        const newArena = await tx.arena.create({
+          data: {
+            name: dto.name,
+            cnpj: cleanedCnpj,
+            address: dto.address,
+            number: dto.number,
+            complement: dto.complement,
+            neighborhood: dto.neighborhood,
+            zipCode: dto.zipCode ? dto.zipCode.replace(/\D/g, '') : null,
+            city: dto.city,
+            state: dto.state.toUpperCase(),
+            isActive: true,
+            admins: {
+              connect: { id: userId },
+            },
           },
-        },
+        });
+
+        // Vincula a Assinatura do SaaS referente ao Token
+        const now = new Date();
+        const nextCycle = new Date(now);
+        nextCycle.setMonth(nextCycle.getMonth() + 1); // Define 1 mês de vigência inicial
+
+        // 2. Substitua o bloco da criação da assinatura
+        await tx.arenaSubscription.create({
+          data: {
+            arena: {
+              connect: { id: newArena.id },
+            },
+            // Verifique no seu schema.prisma se a relação é 'plan' ou 'platformPlan'
+            platformPlan: { 
+              connect: { id: inviteToken.planId },
+            },
+            status: 'ACTIVE',
+            currentCycleStart: now,
+            currentCycleEnd: nextCycle,
+            // Passe a string vazia ou o ID do Asaas se estiver salvo no token/convite
+            asaasSubscriptionId: inviteToken.paymentId ?? '', 
+          },
+        });
+
+        // Consome e inativa o token de convite
+        await tx.arenaRegistrationToken.update({
+          where: { id: inviteToken.id },
+          data: {
+            isUsed: true,
+            usedAt: new Date(),
+          },
+        });
+
+        // Promove o Usuário para ARENA_ADMIN
+        const updatedUser = await tx.user.update({
+          where: { id: userId },
+          data: {
+            role: Role.ARENA_ADMIN,
+            activeArenaId: newArena.id,
+          },
+          include: {
+            arenasManaged: {
+              select: { id: true, name: true },
+            },
+          },
+        });
+
+        return { arena: newArena, user: updatedUser };
       });
 
-      const updatedUser = await tx.user.update({
-        where: { id: userId },
-        data: {
-          role: Role.ARENA_ADMIN,
-          activeArenaId: newArena.id,
-        },
-        include: {
-          arenasManaged: {
-            select: { id: true, name: true },
-          },
-        },
+      // 5. Onboarding Financeiro no Asaas (Subconta)
+      const cpfCnpjForOnboarding = cleanedCnpj || (user.cpf ? user.cpf.replace(/\D/g, '') : null);
+      const asaasOnboarding = await this.attemptAsaasOnboarding(result.arena.id, {
+        name: dto.name,
+        email: user.email,
+        cpfCnpj: cpfCnpjForOnboarding,
+        phone: user.phone || undefined,
+        address: dto.address,
+        addressNumber: dto.number,
+        province: dto.neighborhood,
+        postalCode: dto.zipCode ? dto.zipCode.replace(/\D/g, '') : undefined,
       });
 
-      return { arena: newArena, user: updatedUser };
-    });
+      if (asaasOnboarding.success) {
+        result.arena.asaasAccountId = asaasOnboarding.asaasAccountId!;
+        result.arena.asaasWalletId = asaasOnboarding.asaasWalletId!;
+        result.arena.isPayoutEnabled = true;
+      }
 
-    // O JWT antigo ainda carrega role: ATHLETE — sem emitir um token novo aqui,
-    // toda rota @Roles(ARENA_ADMIN) seguinte (criar quadra, editar arena, etc.)
-    // seria barrada com 403 até o usuário deslogar e logar de novo.
-    const newAccessToken = this.jwtService.sign({
-      sub: result.user.id,
-      email: result.user.email,
-      role: result.user.role,
-    });
-
-    return {
-      message: 'Arena cadastrada com sucesso e usuário promovido a ARENA_ADMIN.',
-      accessToken: newAccessToken,
-      arena: result.arena,
-      user: {
-        id: result.user.id,
-        name: result.user.name,
+      // 6. Geração de novo JWT com as permissões atualizadas de ARENA_ADMIN
+      const newAccessToken = this.jwtService.sign({
+        sub: result.user.id,
         email: result.user.email,
         role: result.user.role,
-        arenasManaged: result.user.arenasManaged,
-      },
-    };
+      });
+
+      return {
+        message: 'Arena cadastrada com sucesso e usuário promovido a ARENA_ADMIN.',
+        accessToken: newAccessToken,
+        arena: result.arena,
+        asaasOnboarding,
+        user: {
+          id: result.user.id,
+          name: result.user.name,
+          email: result.user.email,
+          role: result.user.role,
+          arenasManaged: result.user.arenasManaged,
+        },
+      };
+    } catch (error: unknown) {
+      // Trata violação de restrição `@unique` do PostgreSQL (código P2002 do Prisma)
+      const prismaError = error as {
+        code?: string;
+        meta?: { target?: string | string[] };
+      };
+      const target = prismaError.meta?.target;
+      if (
+        prismaError.code === 'P2002' &&
+        (Array.isArray(target) ? target.includes('cnpj') : target?.includes('cnpj'))
+      ) {
+        throw new ConflictException('Já existe uma arena cadastrada com este CNPJ.');
+      }
+      throw error;
+    }
   }
+  /**
+   * Best-effort: cria a subconta Asaas da arena. Usado tanto na criação da
+   * arena (becomeArenaAdmin) quanto no endpoint de retry, quando a primeira
+   * tentativa falha (Asaas fora do ar, dados incompletos etc.).
+   */
+  private async attemptAsaasOnboarding(
+    arenaId: string,
+    data: { name: string; email: string; cpfCnpj: string | null; phone?: string; address?: string; addressNumber?: string; province?: string; postalCode?: string },
+  ): Promise<{ success: boolean; reason?: string; asaasAccountId?: string; asaasWalletId?: string }> {
+    if (!data.cpfCnpj) {
+      return {
+        success: false,
+        reason: 'Informe o CNPJ da arena (ou cadastre seu CPF no perfil) para habilitar recebimentos online.',
+      };
+    }
+
+    try {
+      const subaccount = await this.asaasService.createSubaccount({
+        name: data.name,
+        email: data.email,
+        cpfCnpj: data.cpfCnpj,
+        phone: data.phone,
+        mobilePhone: data.phone,
+        address: data.address,
+        addressNumber: data.addressNumber,
+        province: data.province,
+        postalCode: data.postalCode,
+      });
+
+      await this.prisma.arena.update({
+        where: { id: arenaId },
+        data: {
+          asaasAccountId: subaccount.id,
+          asaasWalletId: subaccount.walletId,
+          isPayoutEnabled: true,
+        },
+      });
+
+      return { success: true, asaasAccountId: subaccount.id, asaasWalletId: subaccount.walletId };
+    } catch (error) {
+      this.logger.error(`[Asaas] Falha ao criar subconta para a arena ${arenaId}: ${(error as Error).message}`);
+      return {
+        success: false,
+        reason: 'Não foi possível habilitar os recebimentos online automaticamente. Você pode tentar novamente depois no painel financeiro.',
+      };
+    }
+  }
+
+  /** Endpoint de retry: dono da arena tenta de novo o onboarding Asaas que falhou na criação. */
+  async retryAsaasOnboarding(arenaId: string, user: any) {
+    const arena = await this.prisma.arena.findUnique({
+      where: { id: arenaId },
+      include: { admins: { select: { id: true } } },
+    });
+
+    if (!arena) throw new NotFoundException('Arena não encontrada.');
+
+    const isAdmin = arena.admins.some((a) => a.id === user.id) || user.role === Role.SUPERADMIN;
+    if (!isAdmin) throw new ForbiddenException('Apenas o dono da arena pode gerenciar o onboarding financeiro.');
+
+    if (arena.isPayoutEnabled) {
+      return { success: true, reason: 'Esta arena já está habilitada a receber pagamentos online.' };
+    }
+
+    const owner = await this.prisma.user.findUnique({ where: { id: arena.admins[0]?.id ?? user.id } });
+
+    return this.attemptAsaasOnboarding(arena.id, {
+      name: arena.name,
+      email: owner?.email || user.email,
+      cpfCnpj: arena.cnpj || (owner?.cpf ? owner.cpf.replace(/\D/g, '') : null),
+      phone: owner?.phone || undefined,
+      address: arena.address || undefined,
+      addressNumber: arena.number || undefined,
+      province: arena.neighborhood || undefined,
+      postalCode: arena.zipCode || undefined,
+    });
+  }
+
   async updateArena(
     arenaId: string,
     user: any,
@@ -849,9 +1034,6 @@ export class ArenasService {
     const openTimeStr = schedule?.openTime || '06:00';
     const closeTimeStr = schedule?.closeTime || '23:00';
 
-    const [openHour, openMin] = openTimeStr.split(':').map(Number);
-    const [closeHour, closeMin] = closeTimeStr.split(':').map(Number);
-
     const startOfDay = new Date(targetDate);
     startOfDay.setUTCHours(0, 0, 0, 0);
 
@@ -888,11 +1070,8 @@ export class ArenasService {
         price: number;
       }[] = [];
 
-      const slotCursor = new Date(startOfDay);
-      slotCursor.setUTCHours(openHour, openMin, 0, 0);
-
-      const dayEndLimit = new Date(startOfDay);
-      dayEndLimit.setUTCHours(closeHour, closeMin, 0, 0);
+      const slotCursor = brazilTimeToUtcDate(startOfDay, openTimeStr);
+      const dayEndLimit = brazilTimeToUtcDate(startOfDay, closeTimeStr);
 
       while (slotCursor.getTime() + slotMinutes * 60000 <= dayEndLimit.getTime()) {
         const slotStart = new Date(slotCursor);
@@ -910,7 +1089,7 @@ export class ArenasService {
         slots.push({
           startTime: slotStart.toISOString(),
           endTime: slotEnd.toISOString(),
-          timeLabel: `${String(slotStart.getUTCHours()).padStart(2, '0')}:${String(slotStart.getUTCMinutes()).padStart(2, '0')}`,
+          timeLabel: utcDateToBrazilTimeLabel(slotStart),
           isAvailable,
           price: slotPrice,
         });
