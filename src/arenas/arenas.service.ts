@@ -32,7 +32,7 @@ export class ArenasService {
   ) {}
 
   async becomeArenaAdmin(userId: string, dto: CreateArenaRequestDto) {
-    // 1. Validação prévia do Token de Convite
+    // 1. Validação do Token de Convite
     const inviteToken = await this.prisma.arenaRegistrationToken.findUnique({
       where: { token: dto.token },
       include: { plan: true },
@@ -50,7 +50,7 @@ export class ArenasService {
       throw new BadRequestException('Este token de convite expirou.');
     }
 
-    // 2. Validação prévia do Usuário
+    // 2. Validação do Usuário
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
     });
@@ -59,36 +59,50 @@ export class ArenasService {
       throw new NotFoundException('Usuário não encontrado.');
     }
 
-    // Sanitização do CNPJ (remove tudo que não for dígito)
     const cleanedCnpj = dto.cnpj ? dto.cnpj.replace(/\D/g, '') : null;
 
-    // 3. Validação de Unicidade de CNPJ (Check antes da transação)
+    // 3. Localiza a Arena PENDENTE/CRIADA no Checkout pelo e-mail do convite
+    const existingArena = await this.prisma.arena.findFirst({
+      where: { email: inviteToken.email },
+    });
+
+    if (!existingArena) {
+      throw new NotFoundException('Nenhuma arena associada a este convite foi encontrada.');
+    }
+
+    // Validação de CNPJ se for diferente do atual ou se já estiver em uso por outra arena
     if (cleanedCnpj) {
-      const existingArena = await this.prisma.arena.findUnique({
-        where: { cnpj: cleanedCnpj },
+      const cnpjConflict = await this.prisma.arena.findFirst({
+        where: {
+          cnpj: cleanedCnpj,
+          id: { not: existingArena.id },
+        },
       });
 
-      if (existingArena) {
-        throw new ConflictException('Já existe uma arena cadastrada com este CNPJ.');
+      if (cnpjConflict) {
+        throw new ConflictException('Já existe outra arena cadastrada com este CNPJ.');
       }
     }
 
-    // 4. Execução da Transação no Banco
+    // 4. Onboarding Financeiro no Asaas (Criação/Atualização da Subconta)
+    const cpfCnpjForOnboarding = cleanedCnpj || (user.cpf ? user.cpf.replace(/\D/g, '') : null);
+    const asaasOnboarding = await this.attemptAsaasOnboarding(existingArena.id, {
+      name: dto.name,
+      email: user.email,
+      cpfCnpj: cpfCnpjForOnboarding,
+      phone: user.phone || undefined,
+      address: dto.address,
+      addressNumber: dto.number,
+      province: dto.neighborhood,
+      postalCode: dto.zipCode ? dto.zipCode.replace(/\D/g, '') : undefined,
+    });
+
+    // 5. Execução da Transação no Banco de Dados
     try {
       const result = await this.prisma.$transaction(async (tx) => {
-        // Re-valida dentro da transação para evitar Race Conditions (2 requests simultâneos)
-        if (cleanedCnpj) {
-          const existingInTx = await tx.arena.findUnique({
-            where: { cnpj: cleanedCnpj },
-          });
-
-          if (existingInTx) {
-            throw new ConflictException('Já existe uma arena cadastrada com este CNPJ.');
-          }
-        }
-
-        // Criação da Arena
-        const newArena = await tx.arena.create({
+        // Atualiza os dados da Arena EXISTENTE (não cria uma nova)
+        const updatedArena = await tx.arena.update({
+          where: { id: existingArena.id },
           data: {
             name: dto.name,
             cnpj: cleanedCnpj,
@@ -100,32 +114,12 @@ export class ArenasService {
             city: dto.city,
             state: dto.state.toUpperCase(),
             isActive: true,
+            asaasAccountId: asaasOnboarding.success ? asaasOnboarding.asaasAccountId : existingArena.asaasAccountId,
+            asaasWalletId: asaasOnboarding.success ? asaasOnboarding.asaasWalletId : existingArena.asaasWalletId,
+            isPayoutEnabled: asaasOnboarding.success ? true : existingArena.isPayoutEnabled,
             admins: {
               connect: { id: userId },
             },
-          },
-        });
-
-        // Vincula a Assinatura do SaaS referente ao Token
-        const now = new Date();
-        const nextCycle = new Date(now);
-        nextCycle.setMonth(nextCycle.getMonth() + 1); // Define 1 mês de vigência inicial
-
-        // 2. Substitua o bloco da criação da assinatura
-        await tx.arenaSubscription.create({
-          data: {
-            arena: {
-              connect: { id: newArena.id },
-            },
-            // Verifique no seu schema.prisma se a relação é 'plan' ou 'platformPlan'
-            platformPlan: { 
-              connect: { id: inviteToken.planId },
-            },
-            status: 'ACTIVE',
-            currentCycleStart: now,
-            currentCycleEnd: nextCycle,
-            // Passe a string vazia ou o ID do Asaas se estiver salvo no token/convite
-            asaasSubscriptionId: inviteToken.paymentId ?? '', 
           },
         });
 
@@ -138,12 +132,12 @@ export class ArenasService {
           },
         });
 
-        // Promove o Usuário para ARENA_ADMIN
+        // Promove o Usuário para ARENA_ADMIN e vincula à Arena atualizada
         const updatedUser = await tx.user.update({
           where: { id: userId },
           data: {
             role: Role.ARENA_ADMIN,
-            activeArenaId: newArena.id,
+            activeArenaId: updatedArena.id,
           },
           include: {
             arenasManaged: {
@@ -152,29 +146,10 @@ export class ArenasService {
           },
         });
 
-        return { arena: newArena, user: updatedUser };
+        return { arena: updatedArena, user: updatedUser };
       });
 
-      // 5. Onboarding Financeiro no Asaas (Subconta)
-      const cpfCnpjForOnboarding = cleanedCnpj || (user.cpf ? user.cpf.replace(/\D/g, '') : null);
-      const asaasOnboarding = await this.attemptAsaasOnboarding(result.arena.id, {
-        name: dto.name,
-        email: user.email,
-        cpfCnpj: cpfCnpjForOnboarding,
-        phone: user.phone || undefined,
-        address: dto.address,
-        addressNumber: dto.number,
-        province: dto.neighborhood,
-        postalCode: dto.zipCode ? dto.zipCode.replace(/\D/g, '') : undefined,
-      });
-
-      if (asaasOnboarding.success) {
-        result.arena.asaasAccountId = asaasOnboarding.asaasAccountId!;
-        result.arena.asaasWalletId = asaasOnboarding.asaasWalletId!;
-        result.arena.isPayoutEnabled = true;
-      }
-
-      // 6. Geração de novo JWT com as permissões atualizadas de ARENA_ADMIN
+      // 6. Emissão do JWT atualizado
       const newAccessToken = this.jwtService.sign({
         sub: result.user.id,
         email: result.user.email,
@@ -182,7 +157,7 @@ export class ArenasService {
       });
 
       return {
-        message: 'Arena cadastrada com sucesso e usuário promovido a ARENA_ADMIN.',
+        message: 'Cadastro da arena concluído e usuário promovido a ARENA_ADMIN.',
         accessToken: newAccessToken,
         arena: result.arena,
         asaasOnboarding,
@@ -195,11 +170,7 @@ export class ArenasService {
         },
       };
     } catch (error: unknown) {
-      // Trata violação de restrição `@unique` do PostgreSQL (código P2002 do Prisma)
-      const prismaError = error as {
-        code?: string;
-        meta?: { target?: string | string[] };
-      };
+      const prismaError = error as { code?: string; meta?: { target?: string | string[] } };
       const target = prismaError.meta?.target;
       if (
         prismaError.code === 'P2002' &&
