@@ -10,7 +10,7 @@ import { Prisma, Role, BookingStatus, Sport } from '@prisma/client';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { FirebaseStorageService } from '../storage/storage.service';
-import { CreateArenaRequestDto } from './dto/create-arena-request.dto';
+import { CreateSubAccountDto } from './dto/create-arena-request.dto';
 import { FindArenaFollowersQueryDto } from './dto/find-arena-followers-query.dto';
 import { FindArenasQueryDto } from './dto/find-arenas-query.dto';
 import { UpdateArenaDto } from './dto/update-arena.dto';
@@ -31,7 +31,7 @@ export class ArenasService {
     private readonly asaasService: AsaasService,
   ) {}
 
-  async becomeArenaAdmin(userId: string, dto: CreateArenaRequestDto) {
+  async becomeArenaAdmin(userId: string, dto: CreateSubAccountDto) {
     // 1. Validação do Token de Convite
     const inviteToken = await this.prisma.arenaRegistrationToken.findUnique({
       where: { token: dto.token },
@@ -59,7 +59,7 @@ export class ArenasService {
       throw new NotFoundException('Usuário não encontrado.');
     }
 
-    const cleanedCnpj = dto.cnpj ? dto.cnpj.replace(/\D/g, '') : null;
+    const cleanedCnpj = dto.cpfCnpj ? dto.cpfCnpj.replace(/\D/g, '') : null;
 
     // 3. Localiza a Arena PENDENTE/CRIADA no Checkout pelo e-mail do convite
     const existingArena = await this.prisma.arena.findFirst({
@@ -86,15 +86,17 @@ export class ArenasService {
 
     // 4. Onboarding Financeiro no Asaas (Criação/Atualização da Subconta)
     const cpfCnpjForOnboarding = cleanedCnpj || (user.cpf ? user.cpf.replace(/\D/g, '') : null);
+
     const asaasOnboarding = await this.attemptAsaasOnboarding(existingArena.id, {
       name: dto.name,
       email: user.email,
       cpfCnpj: cpfCnpjForOnboarding,
-      phone: user.phone || undefined,
+      phone: user.phone || dto.phone, // Garante que o celular seja capturado
+      incomeValue: dto.incomeValue || 10000, // Informe a renda/faturamento
       address: dto.address,
-      addressNumber: dto.number,
-      province: dto.neighborhood,
-      postalCode: dto.zipCode ? dto.zipCode.replace(/\D/g, '') : undefined,
+      addressNumber: dto.addressNumber,
+      province: dto.province,
+      postalCode: dto.postalCode ? dto.postalCode.replace(/\D/g, '') : undefined,
     });
 
     // 5. Execução da Transação no Banco de Dados
@@ -107,10 +109,10 @@ export class ArenasService {
             name: dto.name,
             cnpj: cleanedCnpj,
             address: dto.address,
-            number: dto.number,
+            number: dto.addressNumber,
             complement: dto.complement,
-            neighborhood: dto.neighborhood,
-            zipCode: dto.zipCode ? dto.zipCode.replace(/\D/g, '') : null,
+            neighborhood: dto.province,
+            zipCode: dto.postalCode ? dto.postalCode.replace(/\D/g, '') : null,
             city: dto.city,
             state: dto.state.toUpperCase(),
             isActive: true,
@@ -186,45 +188,52 @@ export class ArenasService {
    * arena (becomeArenaAdmin) quanto no endpoint de retry, quando a primeira
    * tentativa falha (Asaas fora do ar, dados incompletos etc.).
    */
-  private async attemptAsaasOnboarding(
-    arenaId: string,
-    data: { name: string; email: string; cpfCnpj: string | null; phone?: string; address?: string; addressNumber?: string; province?: string; postalCode?: string },
-  ): Promise<{ success: boolean; reason?: string; asaasAccountId?: string; asaasWalletId?: string }> {
-    if (!data.cpfCnpj) {
-      return {
-        success: false,
-        reason: 'Informe o CNPJ da arena (ou cadastre seu CPF no perfil) para habilitar recebimentos online.',
-      };
-    }
-
+  private async attemptAsaasOnboarding(arenaId: string, data: any) {
     try {
-      const subaccount = await this.asaasService.createSubaccount({
+      // 1. Garante que CPF/CNPJ exista e contenha apenas números
+      const cleanCpfCnpj = data.cpfCnpj ? data.cpfCnpj.replace(/\D/g, '') : null;
+      if (!cleanCpfCnpj) {
+        throw new BadRequestException('CPF ou CNPJ é obrigatório para o cadastro financeiro no Asaas.');
+      }
+
+      // 2. Sanitização do telefone/celular
+      const cleanPhone = data.phone ? data.phone.replace(/\D/g, '') : null;
+      if (!cleanPhone) {
+        throw new BadRequestException('Telefone celular válido é obrigatório para o cadastro no Asaas.');
+      }
+
+      // 3. Montagem do payload aderente ao CreateSubAccountDto
+      const subaccountPayload: CreateSubAccountDto = {
         name: data.name,
         email: data.email,
-        cpfCnpj: data.cpfCnpj,
-        phone: data.phone,
-        mobilePhone: data.phone,
+        cpfCnpj: cleanCpfCnpj,
+        mobilePhone: cleanPhone,
+        incomeValue: data.incomeValue || 5000, // Valor estimado padrão se não vier no DTO
         address: data.address,
         addressNumber: data.addressNumber,
         province: data.province,
-        postalCode: data.postalCode,
-      });
+        city: data.city,
+        state: data.state,
+        postalCode: data.postalCode ? data.postalCode.replace(/\D/g, '') : '',
+      };
 
-      await this.prisma.arena.update({
-        where: { id: arenaId },
-        data: {
-          asaasAccountId: subaccount.id,
-          asaasWalletId: subaccount.walletId,
-          isPayoutEnabled: true,
-        },
-      });
+      // 4. Chamada do serviço Asaas
+      const asaasResponse = await this.asaasService.createSubaccount(subaccountPayload);
 
-      return { success: true, asaasAccountId: subaccount.id, asaasWalletId: subaccount.walletId };
-    } catch (error) {
-      this.logger.error(`[Asaas] Falha ao criar subconta para a arena ${arenaId}: ${(error as Error).message}`);
+      return {
+        success: true,
+        asaasAccountId: asaasResponse.id,
+        asaasWalletId: asaasResponse.walletId,
+        apiKey: asaasResponse.accessToken?.apiKey, // Chave individual gerada da subconta
+      };
+    } catch (error: any) {
+      this.logger.error(`[Asaas Onboarding] Erro ao criar subconta para arena ${arenaId}: ${error.message}`);
+      
       return {
         success: false,
-        reason: 'Não foi possível habilitar os recebimentos online automaticamente. Você pode tentar novamente depois no painel financeiro.',
+        error: error.message || 'Falha no onboarding Asaas',
+        asaasAccountId: null,
+        asaasWalletId: null,
       };
     }
   }
@@ -287,8 +296,8 @@ export class ArenasService {
     }
 
     let cleanedCnpj: string | undefined = undefined;
-    if (dto.cnpj) {
-      cleanedCnpj = dto.cnpj.replace(/\D/g, '');
+    if (dto.cpfCnpj) {
+      cleanedCnpj = dto.cpfCnpj.replace(/\D/g, '');
       const existingCnpj = await this.prisma.arena.findFirst({
         where: {
           cnpj: cleanedCnpj,
@@ -347,12 +356,11 @@ export class ArenasService {
       // 5. Montagem Dinâmica de Atualização com Relações Aninhadas
       const dataToUpdate: Prisma.ArenaUpdateInput = {
         ...(dto.name && { name: dto.name }),
-        ...(cleanedCnpj && { cnpj: cleanedCnpj }),
+        ...(dto.cpfCnpj && { cpfCnpj: cleanedCnpj }),
         ...(dto.address !== undefined && { address: dto.address }),
-        ...(dto.number !== undefined && { number: dto.number }),
+        ...(dto.addressNumber !== undefined && { addressNumber: dto.addressNumber }),
         ...(dto.complement !== undefined && { complement: dto.complement }),
-        ...(dto.neighborhood !== undefined && { neighborhood: dto.neighborhood }),
-        ...(dto.zipCode !== undefined && { zipCode: dto.zipCode.replace(/\D/g, '') }),
+        ...(dto.postalCode !== undefined && { zipCode: dto.postalCode.replace(/\D/g, '') }),
         ...(dto.city && { city: dto.city }),
         ...(dto.state && { state: dto.state.toUpperCase() }),
 

@@ -29,7 +29,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { MAX_FILE_SIZE, multerImageFilter } from '../common/utils/multer-image.filter';
 import { ArenasService } from './arenas.service';
-import { CreateArenaRequestDto } from './dto/create-arena-request.dto';
+import { CreateSubAccountDto } from './dto/create-arena-request.dto';
 import { FindArenaFollowersQueryDto } from './dto/find-arena-followers-query.dto';
 import { FindArenasQueryDto } from './dto/find-arenas-query.dto';
 import { ToggleArenaStatusDto } from './dto/toggle-arena-status.dto';
@@ -54,7 +54,7 @@ export class ArenasController {
   @ApiResponse({ status: 409, description: 'CNPJ já cadastrado.' })
   becomeArenaAdmin(
     @CurrentUser('id') currentUserId: string,
-    @Body() dto: CreateArenaRequestDto,
+    @Body() dto: CreateSubAccountDto,
   ) {
     return this.arenasService.becomeArenaAdmin(currentUserId, dto);
   }
