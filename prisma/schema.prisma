@@ -61,11 +61,11 @@ enum Gender {
 }
 
 enum PaymentCategory {
-  BOOKING       // Recebimento de Agendamento
-  BAR_SNACKBAR  // Lanchonete / Bar
+  BOOKING // Recebimento de Agendamento
+  BAR_SNACKBAR // Lanchonete / Bar
   EQUIPMENT_RENTAL // Aluguel de Raquetes / Bolas
-  SPONSORSHIP   // Patrocínio
-  OTHER         // Outros
+  SPONSORSHIP // Patrocínio
+  OTHER // Outros
 }
 
 enum PaymentStatus {
@@ -76,11 +76,11 @@ enum PaymentStatus {
 }
 
 enum BookingType {
-  FREE_PLAY         // Locação Avulsa / ForFun
-  SINGLE_LESSON     // Aula Livre (1 atleta ou avulso)
-  GROUP_LESSON      // Aula Coletiva com Professor (múltiplos alunos pagando individualmente)
-  RECURRING_LESSON  // Aula Fixa Semanal
-  TOURNAMENT        // Campeonato / Evento (bloqueio de quadra em lote)
+  FREE_PLAY // Locação Avulsa / ForFun
+  SINGLE_LESSON // Aula Livre (1 atleta ou avulso)
+  GROUP_LESSON // Aula Coletiva com Professor (múltiplos alunos pagando individualmente)
+  RECURRING_LESSON // Aula Fixa Semanal
+  TOURNAMENT // Campeonato / Evento (bloqueio de quadra em lote)
 }
 
 enum ParticipantStatus {
@@ -110,72 +110,72 @@ enum SplitType {
 }
 
 enum BannerPosition {
-  HERO         // Carrossel principal no topo
-  STRIP        // Banner régua no meio da página (faixa promocional/aviso)
-  POPUP        // Modal ao abrir o app
+  HERO // Carrossel principal no topo
+  STRIP // Banner régua no meio da página (faixa promocional/aviso)
+  POPUP // Modal ao abrir o app
 }
 
 enum BannerActionType {
   ARENA_DETAILS // Abre uma arena específica no app
   COURT_DETAILS // Abre uma quadra específica
-  EXTERNAL_URL  // Abre navegador externo (ex: patrocinador, loja)
-  NONE          // Banner puramente visual / informativo
+  EXTERNAL_URL // Abre navegador externo (ex: patrocinador, loja)
+  NONE // Banner puramente visual / informativo
 }
 
 enum HomeSectionType {
-  HERO_BANNERS        // Carrossel de banners principais no topo
-  STRIP_BANNER        // Banner régua no meio ou topo
-  NEXT_BOOKINGS       // Próximos jogos do atleta
-  FOLLOWED_ARENAS     // Arenas que o atleta segue
-  CITY_ARENAS         // Arenas na cidade do atleta
-  RECOMMENDED_ARENAS  // Arenas mais populares/em alta
+  HERO_BANNERS // Carrossel de banners principais no topo
+  STRIP_BANNER // Banner régua no meio ou topo
+  NEXT_BOOKINGS // Próximos jogos do atleta
+  FOLLOWED_ARENAS // Arenas que o atleta segue
+  CITY_ARENAS // Arenas na cidade do atleta
+  RECOMMENDED_ARENAS // Arenas mais populares/em alta
 }
 
 model User {
-  id           String        @id @default(uuid())
-  name         String
-  email        String        @unique
-  password     String?
-  phone        String?
+  id       String  @id @default(uuid())
+  name     String
+  email    String  @unique
+  password String?
+  phone    String?
 
-  cpf           String?       @unique
-  gender        Gender?
-  birthDate     DateTime?
-  city          String?
-  state         String?
+  cpf       String?   @unique
+  gender    Gender?
+  birthDate DateTime?
+  city      String?
+  state     String?
 
-  avatar    File?    @relation("UserAvatar")
-  cover     File?    @relation("UserCover")
-  role         Role          @default(ATHLETE)
-  btRating     Float         @default(1000.0) // Beach Tennis Rating
-  footvolleyElo Float        @default(1000.0) // Footvolley Elo
+  avatar        File? @relation("UserAvatar")
+  cover         File? @relation("UserCover")
+  role          Role  @default(ATHLETE)
+  btRating      Float @default(1000.0) // Beach Tennis Rating
+  footvolleyElo Float @default(1000.0) // Footvolley Elo
 
-  googleId      String?       @unique
-  appleId       String?       @unique
-  asaasCustomerId String?     @unique // cus_xxxxxx — criado no 1º checkout online do atleta
-  
-  arenasManaged Arena[]  @relation("ArenaAdmins")
+  googleId        String? @unique
+  appleId         String? @unique
+  asaasCustomerId String? @unique // cus_xxxxxx — criado no 1º checkout online do atleta
+
+  arenasManaged Arena[]        @relation("ArenaAdmins")
   activeArenaId String?
   arenaRequests ArenaRequest[]
 
-  arenasEmployed Arena[]  @relation("ArenaStaff")
+  arenasEmployed Arena[] @relation("ArenaStaff")
 
-  sentInvites    StaffInvite[] @relation("SentInvites")
+  sentInvites StaffInvite[] @relation("SentInvites")
 
-  bio           String?   // Apresentação do professor
-  hourlyRate    Decimal?  @db.Decimal(10, 2) // Valor da hora/aula do professor
+  bio        String? // Apresentação do professor
+  hourlyRate Decimal? @db.Decimal(10, 2) // Valor da hora/aula do professor
 
   payments Payment[]
 
   followedArenas ArenaFollower[]
-  
-  bookings     Booking[]
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+
+  bookings  Booking[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   paymentsCreated Payment[] @relation("PaymentsCreated")
 
-  coachBookings Booking[] @relation("CoachBookings")
+  coachBookings  Booking[]            @relation("CoachBookings")
   participations BookingParticipant[]
 
   memberships AthleteMembership[]
@@ -184,218 +184,219 @@ model User {
 }
 
 model Arena {
-  id          String        @id @default(uuid())
+  id          String   @id @default(uuid())
   name        String
-  cnpj         String?  @unique // CNPJ ou CPF principal
-  cpf          String?  @unique // Adicionado para suportar arenas em nome de pessoa física
-  companyType  String?  @default("MEI") // MEI, LIMITED, INDIVIDUAL, ASSOCIATION, etc.
-  incomeValue  Decimal? @default(10000.00) @db.Decimal(10, 2) // Faturamento estimado exigido pelo Asaas
+  cnpj        String?  @unique // CNPJ ou CPF principal
+  cpf         String?  @unique // Adicionado para suportar arenas em nome de pessoa física
+  companyType String?  @default("MEI") // MEI, LIMITED, INDIVIDUAL, ASSOCIATION, etc.
+  incomeValue Decimal? @default(10000.00) @db.Decimal(10, 2) // Faturamento estimado exigido pelo Asaas
 
-  phone        String?
-  mobilePhone  String?
+  phone       String?
+  mobilePhone String?
 
-  email        String?  // E-mail comercial da arena para notificações/subconta
+  email String? // E-mail comercial da arena para notificações/subconta
 
-  address      String?       
-  number       String?      
-  complement   String?      
-  neighborhood String?       
-  zipCode      String?      
+  address      String?
+  number       String?
+  complement   String?
+  neighborhood String?
+  zipCode      String?
   city         String
-  state        String       
+  state        String
 
-  isActive     Boolean       @default(true)
+  isActive Boolean @default(true)
 
-  logo      File?    @relation("ArenaLogo")
-  cover     File?    @relation("ArenaCover")
-  photos    File[]   @relation("ArenaGallery")
+  logo   File?  @relation("ArenaLogo")
+  cover  File?  @relation("ArenaCover")
+  photos File[] @relation("ArenaGallery")
 
   operatingHours ArenaOperatingHour[]
   holidays       ArenaHoliday[]
-  
-  courts      Court[]
-  bookings    Booking[]
-  banners        Banner[]
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
 
-  admins    User[]   @relation("ArenaAdmins")
-  staff     User[]   @relation("ArenaStaff")
+  courts    Court[]
+  bookings  Booking[]
+  banners   Banner[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  admins User[] @relation("ArenaAdmins")
+  staff  User[] @relation("ArenaStaff")
 
   followers ArenaFollower[]
 
-  invites   StaffInvite[]
+  invites StaffInvite[]
 
-  payments Payment[]
+  payments           Payment[]
+  registrationTokens ArenaRegistrationToken[]
 
   // Integração financeira Asaas
-  asaasAccountId      String?               @unique // ID da subconta no Asaas (ex: cus_xxxxxx)
-  asaasWalletId       String?               @unique // ID da carteira no Asaas, usada no split
-  platformFeePercent  Decimal?              @default(5.00) @db.Decimal(5, 2)
-  isPayoutEnabled     Boolean               @default(false)
-  platformSubs        ArenaSubscription[]
-  membershipPlans     ArenaMembershipPlan[]
+  asaasAccountId     String?               @unique // ID da subconta no Asaas (ex: cus_xxxxxx)
+  asaasWalletId      String?               @unique // ID da carteira no Asaas, usada no split
+  platformFeePercent Decimal?              @default(5.00) @db.Decimal(5, 2)
+  isPayoutEnabled    Boolean               @default(false)
+  platformSubs       ArenaSubscription[]
+  membershipPlans    ArenaMembershipPlan[]
 
   @@map("arenas")
 }
 
 model ArenaRequest {
-  id           String        @id @default(uuid())
-  arenaName    String
-  cnpj         String        // CNPJ
-  address      String?
-  city         String
-  state        String
-  phone        String?
-  status       RequestStatus @default(PENDING)
-  
-  userId       String
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id        String        @id @default(uuid())
+  arenaName String
+  cnpj      String // CNPJ
+  address   String?
+  city      String
+  state     String
+  phone     String?
+  status    RequestStatus @default(PENDING)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("arena_requests")
 }
 
 model Court {
-  id          String        @id @default(uuid())
-  name        String        // e.g., "Court 1 - Covered"
-  sport       Sport
-  hourlyRate  Decimal       @db.Decimal(10, 2)
-  isCovered   Boolean       @default(false)
-  isActive    Boolean       @default(true)
+  id         String  @id @default(uuid())
+  name       String // e.g., "Court 1 - Covered"
+  sport      Sport
+  hourlyRate Decimal @db.Decimal(10, 2)
+  isCovered  Boolean @default(false)
+  isActive   Boolean @default(true)
 
-  photos    File[]   @relation("CourtGallery")
-  
-  arenaId     String
-  arena       Arena         @relation(fields: [arenaId], references: [id], onDelete: Cascade)
-  
-  bookings    Booking[]
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  photos File[] @relation("CourtGallery")
+
+  arenaId String
+  arena   Arena  @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  bookings  Booking[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   @@map("courts")
 }
 
 model Booking {
-  id               String            @id @default(uuid())
-  type             BookingType       @default(FREE_PLAY)
-  status           BookingStatus     @default(PENDING)
-  
-  courtId          String
-  arenaId          String
-  userId           String?           // Quem criou ou atleta principal
-  customerName     String?           // Nome caso criado no balcão sem cadastro
-  coachId          String?           // Professor responsável (se for aula)
+  id     String        @id @default(uuid())
+  type   BookingType   @default(FREE_PLAY)
+  status BookingStatus @default(PENDING)
 
-  startTime        DateTime
-  endTime          DateTime
-  
-  totalAmount      Decimal           @db.Decimal(10, 2)
-  pricePerPlayer   Decimal?          @db.Decimal(10, 2) // Preço individual se for GROUP_LESSON
-  maxPlayers       Int?              // Limite de vagas na aula
+  courtId      String
+  arenaId      String
+  userId       String? // Quem criou ou atleta principal
+  customerName String? // Nome caso criado no balcão sem cadastro
+  coachId      String? // Professor responsável (se for aula)
+
+  startTime DateTime
+  endTime   DateTime
+
+  totalAmount    Decimal  @db.Decimal(10, 2)
+  pricePerPlayer Decimal? @db.Decimal(10, 2) // Preço individual se for GROUP_LESSON
+  maxPlayers     Int? // Limite de vagas na aula
 
   // Recorrência para Aula Fixa
-  isRecurring      Boolean           @default(false)
-  recurringGroupId String?           // Agrupa todas as semanas da mesma aula fixa
+  isRecurring      Boolean   @default(false)
+  recurringGroupId String? // Agrupa todas as semanas da mesma aula fixa
   recurrenceEnd    DateTime?
 
   // Campeonatos e Eventos
-  tournamentName   String?
-  notes            String?
+  tournamentName String?
+  notes          String?
 
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  expiresAt   DateTime?
+  expiresAt DateTime?
 
-  court            Court             @relation(fields: [courtId], references: [id])
-  arena            Arena             @relation(fields: [arenaId], references: [id])
-  user             User?             @relation(fields: [userId], references: [id])
-  coach            User?             @relation("CoachBookings", fields: [coachId], references: [id])
-  participants     BookingParticipant[]
-  payment          Payment?
+  court        Court                @relation(fields: [courtId], references: [id])
+  arena        Arena                @relation(fields: [arenaId], references: [id])
+  user         User?                @relation(fields: [userId], references: [id])
+  coach        User?                @relation("CoachBookings", fields: [coachId], references: [id])
+  participants BookingParticipant[]
+  payment      Payment?
 
   @@index([courtId, startTime, endTime])
   @@index([arenaId, startTime])
 }
 
 model BookingParticipant {
-  id          String            @id @default(uuid())
-  bookingId   String
-  userId      String?
-  guestName   String?           // Atleta avulso de balcão
-  pricePaid   Decimal           @db.Decimal(10, 2)
-  status      ParticipantStatus @default(PENDING)
-  createdAt   DateTime          @default(now())
+  id        String            @id @default(uuid())
+  bookingId String
+  userId    String?
+  guestName String? // Atleta avulso de balcão
+  pricePaid Decimal           @db.Decimal(10, 2)
+  status    ParticipantStatus @default(PENDING)
+  createdAt DateTime          @default(now())
 
-  booking     Booking           @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  user        User?             @relation(fields: [userId], references: [id])
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id])
 
   @@unique([bookingId, userId])
 }
 
 model StaffInvite {
-  id          String       @id @default(uuid())
-  email       String
-  role        Role         // RECEPTIONIST ou TEACHER
-  status      InviteStatus @default(PENDING)
+  id     String       @id @default(uuid())
+  email  String
+  role   Role // RECEPTIONIST ou TEACHER
+  status InviteStatus @default(PENDING)
 
-  arenaId     String
-  arena       Arena        @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  arenaId String
+  arena   Arena  @relation(fields: [arenaId], references: [id], onDelete: Cascade)
 
   invitedById String
-  invitedBy   User         @relation("SentInvites", fields: [invitedById], references: [id], onDelete: Cascade)
+  invitedBy   User   @relation("SentInvites", fields: [invitedById], references: [id], onDelete: Cascade)
 
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("staff_invites")
 }
 
 model Payment {
-  id            String          @id @default(uuid())
-  description   String          // Ex: "Aluguel Quadra 1" ou "Venda de Água e Raquete"
-  amount        Decimal         @db.Decimal(10, 2)
-  method        PaymentMethod
-  category      PaymentCategory @default(OTHER)
-  status        PaymentStatus   @default(COMPLETED)
-  paidAt        DateTime        @default(now())
+  id          String          @id @default(uuid())
+  description String // Ex: "Aluguel Quadra 1" ou "Venda de Água e Raquete"
+  amount      Decimal         @db.Decimal(10, 2)
+  method      PaymentMethod
+  category    PaymentCategory @default(OTHER)
+  status      PaymentStatus   @default(COMPLETED)
+  paidAt      DateTime        @default(now())
 
   // Referência da cobrança na Asaas (pay_xxxxxx), quando gerada via checkout online
-  asaasPaymentId String?        @unique
+  asaasPaymentId String? @unique
 
   // Vinculo com a Arena
-  arenaId       String
-  arena         Arena           @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  arenaId String
+  arena   Arena  @relation(fields: [arenaId], references: [id], onDelete: Cascade)
 
   // Vinculo Opcional com o Agendamento (se for pagamento de reserva)
-  bookingId     String?         @unique
-  booking       Booking?        @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  bookingId String?  @unique
+  booking   Booking? @relation(fields: [bookingId], references: [id], onDelete: SetNull)
 
   // Vinculo Opcional com o Atleta/Cliente (se souber quem pagou)
-  userId        String?
-  user          User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   // Funcionário / Admin que lançou o pagamento
-  createdById   String
-  createdBy     User            @relation("PaymentsCreated", fields: [createdById], references: [id])
+  createdById String
+  createdBy   User   @relation("PaymentsCreated", fields: [createdById], references: [id])
 
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("payments")
 }
 
 model ArenaFollower {
-  id        String   @id @default(uuid())
-  
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id String @id @default(uuid())
 
-  arenaId   String
-  arena     Arena    @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  arenaId String
+  arena   Arena  @relation(fields: [arenaId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 
@@ -406,9 +407,9 @@ model ArenaFollower {
 model ArenaOperatingHour {
   id        String   @id @default(uuid())
   arenaId   String
-  dayOfWeek Int      // 0 = Domingo, 1 = Segunda, ..., 6 = Sábado
-  openTime  String   // Formato "HH:mm", ex: "06:00"
-  closeTime String   // Formato "HH:mm", ex: "23:00"
+  dayOfWeek Int // 0 = Domingo, 1 = Segunda, ..., 6 = Sábado
+  openTime  String // Formato "HH:mm", ex: "06:00"
+  closeTime String // Formato "HH:mm", ex: "23:00"
   isOpen    Boolean  @default(true) // false = Não abre neste dia da semana
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -422,7 +423,7 @@ model ArenaHoliday {
   id          String   @id @default(uuid())
   arenaId     String
   date        DateTime @db.Date // Data específica sem agendamento (ex: 2026-12-25)
-  description String?  // Ex: "Natal", "Manutenção Geral"
+  description String? // Ex: "Natal", "Manutenção Geral"
   createdAt   DateTime @default(now())
 
   arena Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
@@ -432,25 +433,25 @@ model ArenaHoliday {
 
 model File {
   id        String    @id @default(uuid())
-  name      String    // Nome original do arquivo (ex: "foto-quadra-1.png")
-  path      String    // URL pública do Firebase Storage
-  mimeType  String?   // Ex: "image/webp", "image/png"
-  sizeBytes Int?      // Tamanho do arquivo em bytes
+  name      String // Nome original do arquivo (ex: "foto-quadra-1.png")
+  path      String // URL pública do Firebase Storage
+  mimeType  String? // Ex: "image/webp", "image/png"
+  sizeBytes Int? // Tamanho do arquivo em bytes
   isActive  Boolean   @default(true)
   deletedAt DateTime? // Suporte a soft delete
 
   // Relações Opcionais
-  userIdAvatar String?   @unique
-  userAvatar   User?     @relation("UserAvatar", fields: [userIdAvatar], references: [id], onDelete: Cascade)
+  userIdAvatar String? @unique
+  userAvatar   User?   @relation("UserAvatar", fields: [userIdAvatar], references: [id], onDelete: Cascade)
 
-  userIdCover  String?   @unique
-  userCover    User?     @relation("UserCover", fields: [userIdCover], references: [id], onDelete: Cascade)
+  userIdCover String? @unique
+  userCover   User?   @relation("UserCover", fields: [userIdCover], references: [id], onDelete: Cascade)
 
-  arenaIdLogo  String?   @unique
-  arenaLogo    Arena?    @relation("ArenaLogo", fields: [arenaIdLogo], references: [id], onDelete: Cascade)
+  arenaIdLogo String? @unique
+  arenaLogo   Arena?  @relation("ArenaLogo", fields: [arenaIdLogo], references: [id], onDelete: Cascade)
 
-  arenaIdCover String?   @unique
-  arenaCover   Arena?    @relation("ArenaCover", fields: [arenaIdCover], references: [id], onDelete: Cascade)
+  arenaIdCover String? @unique
+  arenaCover   Arena?  @relation("ArenaCover", fields: [arenaIdCover], references: [id], onDelete: Cascade)
 
   arenaGalleryId String?
   arenaGallery   Arena?  @relation("ArenaGallery", fields: [arenaGalleryId], references: [id], onDelete: Cascade)
@@ -468,62 +469,63 @@ model File {
 
 model Banner {
   id          String           @id @default(uuid())
-  title       String?          // Título interno ou de acessibilidade
+  title       String? // Título interno ou de acessibilidade
   position    BannerPosition   @default(HERO)
   actionType  BannerActionType @default(NONE)
-  actionValue String?          // ID da arena/quadra ou URL externa
-  
-  order       Int              @default(0) // Ordenação manual na tela
-  isActive    Boolean          @default(true)
-  
+  actionValue String? // ID da arena/quadra ou URL externa
+
+  order    Int     @default(0) // Ordenação manual na tela
+  isActive Boolean @default(true)
+
   // Agendamento Opcional
-  startDate   DateTime?
-  endDate     DateTime?
+  startDate DateTime?
+  endDate   DateTime?
 
   // Imagem do Banner vinculada à entidade File
-  imageFileId String           @unique
-  image       File             @relation("BannerImage", fields: [imageFileId], references: [id], onDelete: Cascade)
+  imageFileId String @unique
+  image       File   @relation("BannerImage", fields: [imageFileId], references: [id], onDelete: Cascade)
 
   // Escopo: Banner Global do SuperAdmin ou de uma Arena Específica
-  arenaId     String?
-  arena       Arena?           @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  arenaId String?
+  arena   Arena?  @relation(fields: [arenaId], references: [id], onDelete: Cascade)
 
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("banners")
 }
 
 model HomeSection {
-  id        String          @id @default(uuid())
-  title     String?         // Título visível na seção (ex: "Seus Próximos Jogos")
-  subtitle  String?         // Subtítulo opcional
-  type      HomeSectionType
-  order     Int             @default(0) // Posição na tela (1, 2, 3...)
-  isActive  Boolean         @default(true)
+  id       String          @id @default(uuid())
+  title    String? // Título visível na seção (ex: "Seus Próximos Jogos")
+  subtitle String? // Subtítulo opcional
+  type     HomeSectionType
+  order    Int             @default(0) // Posição na tela (1, 2, 3...)
+  isActive Boolean         @default(true)
 
-  createdAt DateTime        @default(now())
-  updatedAt DateTime        @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("home_sections")
 }
+
 // ==========================================
 // MÓDULO FINANCEIRO — ASAAS
 // ==========================================
 
 model PlatformPlan {
-  id              String            @id @default(uuid())
-  name            String            // ex: "Starter", "Pro"
-  description     String?
-  price           Decimal           @db.Decimal(10, 2)
-  billingCycle    PlanBillingCycle  @default(MONTHLY)
-  maxCourts       Int?              // Limite de quadras (null = ilimitado)
-  maxStaff        Int?
-  isActive        Boolean           @default(true)
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  id           String           @id @default(uuid())
+  name         String // ex: "Starter", "Pro"
+  description  String?
+  price        Decimal          @db.Decimal(10, 2)
+  billingCycle PlanBillingCycle @default(MONTHLY)
+  maxCourts    Int? // Limite de quadras (null = ilimitado)
+  maxStaff     Int?
+  isActive     Boolean          @default(true)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
 
-  subscriptions   ArenaSubscription[]
+  subscriptions      ArenaSubscription[]
   registrationTokens ArenaRegistrationToken[]
 
   @@map("platform_plans")
@@ -532,7 +534,7 @@ model PlatformPlan {
 model ArenaSubscription {
   id                  String    @id @default(uuid())
   arenaId             String
-  platformPlanId      String    // <-- Ajuste o nome do campo para bater com a relação abaixo
+  platformPlanId      String // <-- Ajuste o nome do campo para bater com a relação abaixo
   asaasSubscriptionId String?   @unique // sub_xxxxxx (opcional para aceitar nulo)
   status              String    @default("ACTIVE")
   currentCycleStart   DateTime? @default(now())
@@ -548,36 +550,36 @@ model ArenaSubscription {
 }
 
 model ArenaMembershipPlan {
-  id              String            @id @default(uuid())
-  arenaId         String
-  name            String            // ex: "Mensalista Ouro"
-  description     String?
-  price           Decimal           @db.Decimal(10, 2)
-  billingCycle    PlanBillingCycle  @default(MONTHLY)
-  isActive        Boolean           @default(true)
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  id           String           @id @default(uuid())
+  arenaId      String
+  name         String // ex: "Mensalista Ouro"
+  description  String?
+  price        Decimal          @db.Decimal(10, 2)
+  billingCycle PlanBillingCycle @default(MONTHLY)
+  isActive     Boolean          @default(true)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
 
-  arena           Arena             @relation(fields: [arenaId], references: [id], onDelete: Cascade)
-  memberships     AthleteMembership[]
+  arena       Arena               @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  memberships AthleteMembership[]
 
   @@map("arena_membership_plans")
 }
 
 model AthleteMembership {
-  id                     String              @id @default(uuid())
-  arenaMembershipPlanId  String
-  userId                 String
-  asaasSubscriptionId    String              @unique // sub_xxxxxx
-  status                 SubscriptionStatus  @default(PENDING)
-  currentCycleStart      DateTime
-  currentCycleEnd        DateTime
-  cancelledAt            DateTime?
-  createdAt              DateTime            @default(now())
-  updatedAt              DateTime            @updatedAt
+  id                    String             @id @default(uuid())
+  arenaMembershipPlanId String
+  userId                String
+  asaasSubscriptionId   String             @unique // sub_xxxxxx
+  status                SubscriptionStatus @default(PENDING)
+  currentCycleStart     DateTime
+  currentCycleEnd       DateTime
+  cancelledAt           DateTime?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
 
-  plan                   ArenaMembershipPlan @relation(fields: [arenaMembershipPlanId], references: [id], onDelete: Cascade)
-  user                   User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan ArenaMembershipPlan @relation(fields: [arenaMembershipPlanId], references: [id], onDelete: Cascade)
+  user User                @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("athlete_memberships")
 }
@@ -589,8 +591,8 @@ model ArenaRegistrationToken {
   planId    String
   arenaId   String?
   plan      PlatformPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
-  arena     Arena?   @relation(fields: [arenaId], references: [id])
-  paymentId String?      // ID da transação no Asaas
+  arena     Arena?       @relation(fields: [arenaId], references: [id])
+  paymentId String? // ID da transação no Asaas
   isUsed    Boolean      @default(false)
   usedAt    DateTime?
   expiresAt DateTime
