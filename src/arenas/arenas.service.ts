@@ -10,7 +10,7 @@ import { Prisma, Role, BookingStatus, Sport } from '@prisma/client';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { FirebaseStorageService } from '../storage/storage.service';
-import { CreateSubAccountDto } from './dto/create-arena-request.dto';
+import { CompanyType, CreateSubAccountDto } from './dto/create-arena-request.dto';
 import { FindArenaFollowersQueryDto } from './dto/find-arena-followers-query.dto';
 import { FindArenasQueryDto } from './dto/find-arenas-query.dto';
 import { UpdateArenaDto } from './dto/update-arena.dto';
@@ -215,6 +215,7 @@ export class ArenasService {
         city: data.city,
         state: data.state,
         postalCode: data.postalCode ? data.postalCode.replace(/\D/g, '') : '',
+        companyType: data.companyType || CompanyType.MEI,
       };
 
       // 4. Chamada do serviço Asaas
@@ -260,7 +261,9 @@ export class ArenasService {
       name: arena.name,
       email: owner?.email || user.email,
       cpfCnpj: arena.cnpj || (owner?.cpf ? owner.cpf.replace(/\D/g, '') : null),
-      phone: owner?.phone || undefined,
+      companyType: arena.companyType,
+      phone: arena?.phone || undefined,
+      mobilePhone: arena.mobilePhone,
       address: arena.address || undefined,
       addressNumber: arena.number || undefined,
       province: arena.neighborhood || undefined,
