@@ -1,9 +1,8 @@
-import { Type } from 'class-transformer';
-import { IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, ValidateNested } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsString,
+} from 'class-validator';
 
-// A Asaas manda formatos ligeiramente diferentes por tipo de evento
-// (payment.* vs subscription.*). Validamos os campos que realmente usamos e
-// deixamos o restante do payload passar sem travar em decorators redundantes.
 export type AsaasWebhookEvent =
   | 'PAYMENT_CREATED'
   | 'PAYMENT_RECEIVED'
@@ -14,78 +13,25 @@ export type AsaasWebhookEvent =
   | 'SUBSCRIPTION_DELETED'
   | string;
 
-export class AsaasWebhookPaymentPayload {
-  @IsString()
-  @IsNotEmpty()
-  id: string; // pay_xxxxxx
-
-  @IsString()
-  @IsOptional()
-  customer?: string;
-
-  @IsString()
-  @IsOptional()
-  subscription?: string; // sub_xxxxxx, se originado de uma assinatura
-
-  @IsNumber()
-  @IsOptional()
-  value?: number;
-
-  @IsNumber()
-  @IsOptional()
-  netValue?: number;
-
-  @IsString()
-  @IsOptional()
-  status?: string;
-
-  @IsString()
-  @IsOptional()
-  billingType: string;
-
-  @IsString()
-  @IsOptional()
-  externalReference?: string | null;
-
-  @IsString()
-  @IsOptional()
-  paymentDate?: string | null;
-
-  @IsString()
-  @IsOptional()
-  confirmedDate?: string | null;
-}
-
-export class AsaasWebhookSubscriptionPayload {
-  @IsString()
-  @IsNotEmpty()
-  id: string; // sub_xxxxxx
-
-  @IsString()
-  @IsOptional()
-  customer?: string;
-
-  @IsString()
-  @IsOptional()
-  status?: string;
-
-  @IsString()
-  @IsOptional()
-  externalReference?: string | null;
-}
-
 export class AsaasWebhookDto {
+  @IsString()
+  @IsNotEmpty()
+  id: string;
+
   @IsString()
   @IsNotEmpty()
   event: AsaasWebhookEvent;
 
-  @ValidateNested()
-  @Type(() => AsaasWebhookPaymentPayload)
-  @IsOptional()
-  payment?: AsaasWebhookPaymentPayload;
+  @IsString()
+  @IsNotEmpty()
+  dateCreated: string;
 
-  @ValidateNested()
-  @Type(() => AsaasWebhookSubscriptionPayload)
-  @IsOptional()
-  subscription?: AsaasWebhookSubscriptionPayload;
+  account?: {
+    id: string;
+    ownerId?: string | null;
+  };
+
+  payment?: any;
+
+  subscription?: any;
 }
