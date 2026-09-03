@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { BookingStatus, PaymentCategory, PaymentMethod, PaymentStatus, SubscriptionStatus, PlanBillingCycle } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailService } from '../email/mail.service';
-import { AsaasWebhookDto, AsaasWebhookPaymentPayload } from './dto/asaas-webhook.dto';
+import { AsaasWebhookDto } from './dto/asaas-webhook.dto';
 
 import { randomUUID } from 'crypto';
 
@@ -78,7 +78,7 @@ export class AsaasWebhookService {
     }
   }
 
-  private async handlePaymentReceived(payment?: AsaasWebhookPaymentPayload) {
+  private async handlePaymentReceived(payment?: any) {
     if (!payment) return;
     const ref = parseExternalReference(payment.externalReference);
 
@@ -214,7 +214,7 @@ export class AsaasWebhookService {
     });
   }
 
-  private async handlePaymentOverdue(payment?: AsaasWebhookPaymentPayload) {
+  private async handlePaymentOverdue(payment?: any) {
     if (!payment) return;
     const ref = parseExternalReference(payment.externalReference);
 
@@ -235,7 +235,7 @@ export class AsaasWebhookService {
     }
   }
 
-  private async handlePaymentCancelled(payment: AsaasWebhookPaymentPayload | undefined, status: 'CANCELLED' | 'REFUNDED') {
+  private async handlePaymentCancelled(payment: any | undefined, status: 'CANCELLED' | 'REFUNDED') {
     if (!payment) return;
     const existing = await this.prisma.payment.findUnique({ where: { asaasPaymentId: payment.id }, include: { booking: true } });
     if (!existing) {
