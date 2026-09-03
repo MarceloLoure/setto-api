@@ -4,9 +4,10 @@ import { AsaasService } from './asaas.service';
 import { AsaasWebhookController } from './asaas-webhook.controller';
 import { AsaasWebhookService } from './asaas-webhook.service';
 import { SubscriptionGuard } from './guards/subscription.guard';
+import { MailModule } from 'src/email/mail.module';
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, MailModule],
   controllers: [AsaasWebhookController],
   providers: [AsaasService, AsaasWebhookService, SubscriptionGuard],
   exports: [AsaasService, SubscriptionGuard],

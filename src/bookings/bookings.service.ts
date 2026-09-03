@@ -84,31 +84,38 @@ export class BookingsService {
     let arenaWalletId = newBooking.arena.asaasWalletId;
 
     if (!arenaWalletId) {
-      const document = newBooking.arena.cnpj || newBooking.arena.cpf;
+      // Garante sanitização do documento da Arena
+      const rawDocument = newBooking.arena.cnpj || newBooking.arena.cpf;
+      const document = rawDocument ? rawDocument.replace(/\D/g, '') : null;
+
       if (!document) {
-        await this.prisma.booking.delete({ where: { id: newBooking.id } });
-        throw new BadRequestException('A arena precisa cadastrar o CPF/CNPJ para aceitar pagamentos online.');
+        await this.prisma.booking.delete({ where: { id: newBooking.id } }).catch(() => {});
+        throw new BadRequestException(
+          'A arena precisa ter um CPF ou CNPJ válido cadastrado para aceitar pagamentos online.',
+        );
       }
 
       try {
-        // Monta o payload completo de subconta conforme a spec da API do Asaas
         const subaccountPayload = {
           name: newBooking.arena.name,
           email: newBooking.arena.email || `arena_${newBooking.arena.id}@suaplataforma.com.br`,
           cpfCnpj: document,
-          companyType: newBooking.arena.companyType || 'MEI',
-          phone: newBooking.arena.phone || '1133333333',
-          mobilePhone: newBooking.arena.mobilePhone || newBooking.arena.phone || '11999999999',
+          companyType: newBooking.arena.companyType || (document.length === 14 ? 'LIMITED' : 'MEI'),
+          phone: newBooking.arena.phone?.replace(/\D/g, '') || '1133333333',
+          mobilePhone:
+            newBooking.arena.mobilePhone?.replace(/\D/g, '') ||
+            newBooking.arena.phone?.replace(/\D/g, '') ||
+            '11999999999',
           incomeValue: Number(newBooking.arena.incomeValue || 10000),
           address: newBooking.arena.address || 'Não informado',
           addressNumber: newBooking.arena.number || 'S/N',
           complement: newBooking.arena.complement || undefined,
           province: newBooking.arena.neighborhood || 'Centro',
-          postalCode: newBooking.arena.zipCode || '01001000',
+          postalCode: newBooking.arena.zipCode?.replace(/\D/g, '') || '01001000',
           webhooks: [
             {
               name: `Webhook Cobranças — ${newBooking.arena.name}`,
-              url: `${ process.env.BACKEND_URL}/payments/webhook/asaas`,
+              url: `${process.env.BACKEND_URL}/payments/webhook/asaas`,
               email: newBooking.arena.email || user.email,
               sendType: 'SEQUENTIALLY',
               interrupted: false,
@@ -120,14 +127,9 @@ export class BookingsService {
           ],
         };
 
-        console.log(subaccountPayload)
-
         const subaccount = await this.asaasService.createSubaccount(subaccountPayload);
-
-        // O Asaas retorna `walletId` (chave de split) e `id` (account ID)
         arenaWalletId = subaccount.walletId || subaccount.id;
 
-        // Atualiza a arena no banco com os IDs gerados
         await this.prisma.arena.update({
           where: { id: newBooking.arenaId },
           data: {
@@ -136,24 +138,76 @@ export class BookingsService {
           },
         });
       } catch (error) {
-        // Desfaz a pré-reserva criada na transaction em caso de erro no Asaas
         await this.prisma.booking.delete({ where: { id: newBooking.id } }).catch(() => {});
-        throw error;
+        throw new BadRequestException(
+          `Falha ao criar subconta da arena no Asaas: ${error?.response?.data?.errors?.[0]?.description || error.message}`,
+        );
       }
     }
 
-    // 4. Garante Customer Asaas do Usuário
-    let asaasCustomerId = (await this.prisma.user.findUnique({ where: { id: user.id } }))?.asaasCustomerId;
+    // 4. Garante e Sincroniza Customer Asaas do Usuário
+    const fullUser = await this.prisma.user.findUnique({ where: { id: user.id } });
+
+    if (!fullUser?.cpf) {
+      await this.prisma.booking.delete({ where: { id: newBooking.id } }).catch(() => {});
+      throw new BadRequestException(
+        'Você precisa cadastrar seu CPF no perfil para realizar o pagamento de reservas.',
+      );
+    }
+
+    let asaasCustomerId = fullUser.asaasCustomerId;
+
+    const customerData = {
+      name: fullUser.name,
+      email: fullUser.email,
+      cpfCnpj: fullUser.cpf,
+      phone: fullUser.phone || undefined,
+      externalReference: fullUser.id,
+    };
+
     if (!asaasCustomerId) {
-      const customer = await this.asaasService.createCustomer({
-        name: user.name,
-        email: user.email,
-        cpfCnpj: user.cpf || undefined,
-        phone: user.phone || undefined,
-        externalReference: user.id,
+      // 1. Tenta buscar no Asaas se já existe um customer pelo CPF/CNPJ ou Email
+      let existingCustomer: any = null;
+      
+      try {
+        // Tenta buscar por CPF primeiro (mais preciso)
+        const searchByCpf = await this.asaasService.findCustomerByCpfCnpj(fullUser.cpf);
+        console.log(searchByCpf)
+        if (searchByCpf?.data?.length > 0) {
+          existingCustomer = searchByCpf.data[0];
+        } else if (fullUser.email) {
+          // Se não achar por CPF, tenta buscar por email
+          const searchByEmail = await this.asaasService.findCustomerByEmail(fullUser.email);
+          console.log(searchByEmail)
+          if (searchByEmail?.data?.length > 0) {
+            existingCustomer = searchByEmail.data[0];
+          }
+        }
+      } catch (err) {
+        // Se a busca falhar por algum motivo, ignora e tenta criar abaixo
+      }
+
+      if (existingCustomer) {
+        // Se já existia no Asaas, reaproveita o ID e atualiza os dados
+        asaasCustomerId = existingCustomer.id;
+
+        if(asaasCustomerId){
+          await this.asaasService.updateCustomer(asaasCustomerId, customerData).catch(() => {});
+        }
+      } else {
+        // Se não existia, cria um novo no Asaas
+        const customer = await this.asaasService.createCustomer(customerData);
+        asaasCustomerId = customer.id;
+      }
+
+      // Salva o asaasCustomerId no banco local para os próximos acessos
+      await this.prisma.user.update({
+        where: { id: fullUser.id },
+        data: { asaasCustomerId },
       });
-      asaasCustomerId = customer.id;
-      await this.prisma.user.update({ where: { id: user.id }, data: { asaasCustomerId } });
+    } else {
+      // Se já existe no banco local, apenas garante a sincronização no Asaas
+      await this.asaasService.updateCustomer(asaasCustomerId, customerData).catch(() => {});
     }
 
     // 5. Calcula splits (Plataforma vs Arena)

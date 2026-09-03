@@ -524,7 +524,7 @@ model PlatformPlan {
   updatedAt       DateTime          @updatedAt
 
   subscriptions   ArenaSubscription[]
-  registrationTokens  ArenaRegistrationToken[]
+  registrationTokens ArenaRegistrationToken[]
 
   @@map("platform_plans")
 }
@@ -583,18 +583,19 @@ model AthleteMembership {
 }
 
 model ArenaRegistrationToken {
-  id              String       @id @default(uuid())
-  email           String
-  token      String       @unique @default(uuid())
-  planId          String
-  plan            PlatformPlan @relation(fields: [planId], references: [id])
-  paymentId       String?      // ID da transação no Asaas (para conciliação)
-  isUsed          Boolean      @default(false)
-  usedAt          DateTime?
-  expiresAt       DateTime
-  createdAt       DateTime     @default(now())
+  id        String       @id @default(uuid())
+  email     String
+  token     String       @unique @default(uuid())
+  planId    String
+  plan      PlatformPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  paymentId String?      // ID da transação no Asaas
+  isUsed    Boolean      @default(false)
+  usedAt    DateTime?
+  expiresAt DateTime
+  createdAt DateTime     @default(now())
 
   @@index([token])
   @@index([email])
+  @@index([planId])
   @@map("arena_registration_tokens")
 }

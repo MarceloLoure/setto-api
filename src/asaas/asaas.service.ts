@@ -104,4 +104,23 @@ export class AsaasService {
       this.handleError('cancelSubscription', error);
     }
   }
+
+  async updateCustomer(id: string, data: any) {
+    const response = await this.http.post(`/v3/customers/${id}`, data);
+    return response.data;
+  }
+
+  async findCustomerByCpfCnpj(cpfCnpj: string) {
+    const response = await this.http.get('/v3/customers', {
+      params: { cpfCnpj },
+    });
+    return response.data;
+  }
+
+  async findCustomerByEmail(email: string) {
+    const response = await this.http.get('/v3/customers', {
+      params: { email },
+    });
+    return response.data;
+  }
 }

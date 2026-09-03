@@ -10,7 +10,7 @@ import { UpdatePlatformPlanDto } from './dto/update-platform-plan.dto';
 
 @ApiTags('SuperAdmin - Planos SaaS')
 @ApiBearerAuth()
-@Controller('superadmin/plans')
+@Controller('super-admin/plans')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.SUPERADMIN)
 export class PlatformPlansController {

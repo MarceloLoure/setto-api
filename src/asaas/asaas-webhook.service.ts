@@ -1,16 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { BookingStatus, PaymentCategory, PaymentMethod, PaymentStatus, SubscriptionStatus, PlanBillingCycle } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { MailService } from '../email/mail.service';
 import { AsaasWebhookDto, AsaasWebhookPaymentPayload } from './dto/asaas-webhook.dto';
 
-/**
- * Convenção de `externalReference` usada em toda cobrança/assinatura criada
- * pela Setto na Asaas, pra sabermos a qual registro local ela se refere
- * quando o webhook chega de volta: "<tipo>:<id-local>".
- *   booking:<bookingId>
- *   arena_sub:<arenaSubscriptionId>
- *   membership:<athleteMembershipId>
- */
+import { randomUUID } from 'crypto';
+
 type ReferenceKind = 'booking' | 'arena_sub' | 'membership';
 type ParsedReference = { type: ReferenceKind; id: string } | null;
 
@@ -30,7 +25,6 @@ function mapBillingTypeToMethod(billingType: string): PaymentMethod {
     case 'DEBIT_CARD':
       return PaymentMethod.DEBIT_CARD;
     default:
-      // Boleto e outros meios ainda não mapeados no enum interno.
       return PaymentMethod.PIX;
   }
 }
@@ -58,7 +52,10 @@ function addCycle(date: Date, cycle: PlanBillingCycle): Date {
 export class AsaasWebhookService {
   private readonly logger = new Logger(AsaasWebhookService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly mailService: MailService,
+  ) {}
 
   async processEvent(payload: AsaasWebhookDto) {
     this.logger.log(`[Asaas] Evento recebido: ${payload.event}`);
@@ -107,7 +104,7 @@ export class AsaasWebhookService {
             arenaId: booking.arenaId,
             bookingId: booking.id,
             userId: booking.userId,
-            createdById: booking.userId ?? booking.arenaId, // cobrança online, sem operador humano
+            createdById: booking.userId ?? booking.arenaId,
           },
           update: {
             status: PaymentStatus.COMPLETED,
@@ -119,10 +116,12 @@ export class AsaasWebhookService {
       });
     }
 
-    // Assinatura da plataforma Setto (Vertical 2) ou mensalidade de atleta (Vertical 3)
+    // Assinatura da plataforma Setto (Vertical 2)
     if (ref?.type === 'arena_sub' || payment.subscription) {
       return this.extendSubscriptionCycle('arena_sub', ref?.id, payment.subscription);
     }
+
+    // Mensalidade de atleta (Vertical 3)
     if (ref?.type === 'membership') {
       return this.extendSubscriptionCycle('membership', ref.id, payment.subscription);
     }
@@ -132,16 +131,24 @@ export class AsaasWebhookService {
 
   private async extendSubscriptionCycle(kind: 'arena_sub' | 'membership', localId?: string, asaasSubscriptionId?: string) {
     if (kind === 'arena_sub') {
-      const subscription = localId
-        ? await this.prisma.arenaSubscription.findUnique({ where: { id: localId }, include: { platformPlan: true } })
-        : asaasSubscriptionId
-          ? await this.prisma.arenaSubscription.findUnique({ where: { asaasSubscriptionId }, include: { platformPlan: true } })
-          : null;
+      const subscription = await this.prisma.arenaSubscription.findFirst({
+        where: {
+          OR: [
+            ...(localId ? [{ id: localId }] : []),
+            ...(asaasSubscriptionId ? [{ asaasSubscriptionId }] : []),
+          ],
+        },
+        include: { platformPlan: true, arena: true },
+      });
+
       if (!subscription) {
         this.logger.warn(`[Asaas] Assinatura de plataforma não encontrada (local=${localId}, asaas=${asaasSubscriptionId}).`);
         return;
       }
+
+      const isFirstPayment = subscription.status === SubscriptionStatus.PENDING;
       const now = new Date();
+
       await this.prisma.arenaSubscription.update({
         where: { id: subscription.id },
         data: {
@@ -150,6 +157,38 @@ export class AsaasWebhookService {
           currentCycleEnd: addCycle(now, subscription.platformPlan.billingCycle),
         },
       });
+
+      // Emite o token de cadastro no primeiro pagamento (Onboarding)
+      if (isFirstPayment) {
+        const arenaEmail = subscription.arena.email;
+        if (!arenaEmail) {
+          this.logger.warn('[Asaas] Arena sem e-mail para envio do token de cadastro.');
+          return;
+        }
+
+        const token = randomUUID();
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // Expiracao de 7 dias
+
+        await this.prisma.arenaRegistrationToken.create({
+          data: {
+            token,
+            planId: subscription.platformPlanId,
+            email: arenaEmail,
+            expiresAt,
+          },
+        });
+
+        const registrationUrl = `${process.env.FRONTEND_URL}/register?token=${token}`;
+
+        await this.mailService.sendArenaInviteEmail(
+          arenaEmail,
+          token,
+          subscription.platformPlan.name
+        );
+
+        this.logger.log(`[Asaas] Token de cadastro gerado e e-mail enviado para ${arenaEmail}`);
+      }
+
       return;
     }
 
@@ -158,10 +197,12 @@ export class AsaasWebhookService {
       : asaasSubscriptionId
         ? await this.prisma.athleteMembership.findUnique({ where: { asaasSubscriptionId }, include: { plan: true } })
         : null;
+
     if (!membership) {
       this.logger.warn(`[Asaas] Mensalidade de atleta não encontrada (local=${localId}, asaas=${asaasSubscriptionId}).`);
       return;
     }
+
     const now = new Date();
     await this.prisma.athleteMembership.update({
       where: { id: membership.id },
@@ -184,9 +225,6 @@ export class AsaasWebhookService {
       if (subscription) {
         await this.prisma.arenaSubscription.update({ where: { id: subscription.id }, data: { status: SubscriptionStatus.OVERDUE } });
       }
-      // Guard de acesso (SubscriptionGuard) consulta esse status em tempo real
-      // pra bloquear rotas administrativas da arena — nada a fazer aqui além
-      // de atualizar o status.
       return;
     }
 
