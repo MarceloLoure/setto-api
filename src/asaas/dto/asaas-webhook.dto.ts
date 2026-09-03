@@ -1,6 +1,7 @@
 import {
   IsNotEmpty,
   IsString,
+  IsOptional
 } from 'class-validator';
 
 export type AsaasWebhookEvent =
@@ -26,12 +27,15 @@ export class AsaasWebhookDto {
   @IsNotEmpty()
   dateCreated: string;
 
+  @IsOptional()
   account?: {
     id: string;
     ownerId?: string | null;
   };
 
+  @IsOptional()
   payment?: any;
 
+  @IsOptional()
   subscription?: any;
 }
