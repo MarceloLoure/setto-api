@@ -3,284 +3,224 @@ import {
   IsString,
   IsEmail,
   IsNotEmpty,
-  IsNumber,
   IsOptional,
-  IsEnum,
+  IsNumber,
   IsArray,
   ValidateNested,
-  IsBoolean,
-  IsInt,
-  MinLength,
-  MaxLength,
   Matches,
+  Length,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
-export enum CompanyType {
-  MEI = 'MEI',
-  LIMITED = 'LIMITED',
-  INDIVIDUAL = 'INDIVIDUAL',
-  ASSOCIATION = 'ASSOCIATION',
-}
-
-export enum WebhookSendType {
-  NON_SEQUENTIALLY = 'NON_SEQUENTIALLY',
-  SEQUENTIALLY = 'SEQUENTIALLY',
-}
-
-export enum WebhookEvent {
-  PAYMENT_AUTHORIZED = 'PAYMENT_AUTHORIZED',
-  PAYMENT_AWAITING_RISK_ANALYSIS = 'PAYMENT_AWAITING_RISK_ANALYSIS',
-  PAYMENT_APPROVED_BY_RISK_ANALYSIS = 'PAYMENT_APPROVED_BY_RISK_ANALYSIS',
-  PAYMENT_REPROVED_BY_RISK_ANALYSIS = 'PAYMENT_REPROVED_BY_RISK_ANALYSIS',
-  PAYMENT_CREATED = 'PAYMENT_CREATED',
-  PAYMENT_UPDATED = 'PAYMENT_UPDATED',
-  PAYMENT_CONFIRMED = 'PAYMENT_CONFIRMED',
-  PAYMENT_RECEIVED = 'PAYMENT_RECEIVED',
-  PAYMENT_ANTICIPATED = 'PAYMENT_ANTICIPATED',
-  PAYMENT_OVERDUE = 'PAYMENT_OVERDUE',
-  PAYMENT_DELETED = 'PAYMENT_DELETED',
-  PAYMENT_RESTORED = 'PAYMENT_RESTORED',
-  PAYMENT_REFUNDED = 'PAYMENT_REFUNDED',
-  PAYMENT_REFUND_IN_PROGRESS = 'PAYMENT_REFUND_IN_PROGRESS',
-  PAYMENT_REFUND_DENIED = 'PAYMENT_REFUND_DENIED',
-  PAYMENT_RECEIVED_IN_CASH_UNDONE = 'PAYMENT_RECEIVED_IN_CASH_UNDONE',
-  PAYMENT_CHARGEBACK_REQUESTED = 'PAYMENT_CHARGEBACK_REQUESTED',
-  PAYMENT_CHARGEBACK_DISPUTE = 'PAYMENT_CHARGEBACK_DISPUTE',
-  PAYMENT_AWAITING_CHARGEBACK_REVERSAL = 'PAYMENT_AWAITING_CHARGEBACK_REVERSAL',
-  PAYMENT_DUNNING_RECEIVED = 'PAYMENT_DUNNING_RECEIVED',
-  PAYMENT_DUNNING_REQUESTED = 'PAYMENT_DUNNING_REQUESTED',
-  PAYMENT_BANK_SLIP_CANCELLED = 'PAYMENT_BANK_SLIP_CANCELLED',
-  PAYMENT_BANK_SLIP_VIEWED = 'PAYMENT_BANK_SLIP_VIEWED',
-  PAYMENT_CHECKOUT_VIEWED = 'PAYMENT_CHECKOUT_VIEWED',
-  PAYMENT_CREDIT_CARD_CAPTURE_REFUSED = 'PAYMENT_CREDIT_CARD_CAPTURE_REFUSED',
-  PAYMENT_PARTIALLY_REFUNDED = 'PAYMENT_PARTIALLY_REFUNDED',
-  PAYMENT_SPLIT_CANCELLED = 'PAYMENT_SPLIT_CANCELLED',
-  PAYMENT_SPLIT_DIVERGENCE_BLOCK = 'PAYMENT_SPLIT_DIVERGENCE_BLOCK',
-  PAYMENT_SPLIT_DIVERGENCE_BLOCK_FINISHED = 'PAYMENT_SPLIT_DIVERGENCE_BLOCK_FINISHED',
-  INVOICE_CREATED = 'INVOICE_CREATED',
-  INVOICE_UPDATED = 'INVOICE_UPDATED',
-  INVOICE_SYNCHRONIZED = 'INVOICE_SYNCHRONIZED',
-  INVOICE_AUTHORIZED = 'INVOICE_AUTHORIZED',
-  INVOICE_PROCESSING_CANCELLATION = 'INVOICE_PROCESSING_CANCELLATION',
-  INVOICE_CANCELED = 'INVOICE_CANCELED',
-  INVOICE_CANCELLATION_DENIED = 'INVOICE_CANCELLATION_DENIED',
-  INVOICE_ERROR = 'INVOICE_ERROR',
-  TRANSFER_CREATED = 'TRANSFER_CREATED',
-  TRANSFER_PENDING = 'TRANSFER_PENDING',
-  TRANSFER_IN_BANK_PROCESSING = 'TRANSFER_IN_BANK_PROCESSING',
-  TRANSFER_BLOCKED = 'TRANSFER_BLOCKED',
-  TRANSFER_DONE = 'TRANSFER_DONE',
-  TRANSFER_FAILED = 'TRANSFER_FAILED',
-  TRANSFER_CANCELLED = 'TRANSFER_CANCELLED',
-  BILL_CREATED = 'BILL_CREATED',
-  BILL_PENDING = 'BILL_PENDING',
-  BILL_BANK_PROCESSING = 'BILL_BANK_PROCESSING',
-  BILL_PAID = 'BILL_PAID',
-  BILL_CANCELLED = 'BILL_CANCELLED',
-  BILL_FAILED = 'BILL_FAILED',
-  BILL_REFUNDED = 'BILL_REFUNDED',
-  RECEIVABLE_ANTICIPATION_CANCELLED = 'RECEIVABLE_ANTICIPATION_CANCELLED',
-  RECEIVABLE_ANTICIPATION_SCHEDULED = 'RECEIVABLE_ANTICIPATION_SCHEDULED',
-  RECEIVABLE_ANTICIPATION_PENDING = 'RECEIVABLE_ANTICIPATION_PENDING',
-  RECEIVABLE_ANTICIPATION_CREDITED = 'RECEIVABLE_ANTICIPATION_CREDITED',
-  RECEIVABLE_ANTICIPATION_DEBITED = 'RECEIVABLE_ANTICIPATION_DEBITED',
-  RECEIVABLE_ANTICIPATION_DENIED = 'RECEIVABLE_ANTICIPATION_DENIED',
-  RECEIVABLE_ANTICIPATION_OVERDUE = 'RECEIVABLE_ANTICIPATION_OVERDUE',
-  MOBILE_PHONE_RECHARGE_PENDING = 'MOBILE_PHONE_RECHARGE_PENDING',
-  MOBILE_PHONE_RECHARGE_CANCELLED = 'MOBILE_PHONE_RECHARGE_CANCELLED',
-  MOBILE_PHONE_RECHARGE_CONFIRMED = 'MOBILE_PHONE_RECHARGE_CONFIRMED',
-  MOBILE_PHONE_RECHARGE_REFUNDED = 'MOBILE_PHONE_RECHARGE_REFUNDED',
-  ACCOUNT_STATUS_BANK_ACCOUNT_INFO_APPROVED = 'ACCOUNT_STATUS_BANK_ACCOUNT_INFO_APPROVED',
-  ACCOUNT_STATUS_BANK_ACCOUNT_INFO_AWAITING_APPROVAL = 'ACCOUNT_STATUS_BANK_ACCOUNT_INFO_AWAITING_APPROVAL',
-  ACCOUNT_STATUS_BANK_ACCOUNT_INFO_PENDING = 'ACCOUNT_STATUS_BANK_ACCOUNT_INFO_PENDING',
-  ACCOUNT_STATUS_BANK_ACCOUNT_INFO_REJECTED = 'ACCOUNT_STATUS_BANK_ACCOUNT_INFO_REJECTED',
-  ACCOUNT_STATUS_COMMERCIAL_INFO_APPROVED = 'ACCOUNT_STATUS_COMMERCIAL_INFO_APPROVED',
-  ACCOUNT_STATUS_COMMERCIAL_INFO_AWAITING_APPROVAL = 'ACCOUNT_STATUS_COMMERCIAL_INFO_AWAITING_APPROVAL',
-  ACCOUNT_STATUS_COMMERCIAL_INFO_EXPIRED = 'ACCOUNT_STATUS_COMMERCIAL_INFO_EXPIRED',
-  ACCOUNT_STATUS_COMMERCIAL_INFO_EXPIRING_SOON = 'ACCOUNT_STATUS_COMMERCIAL_INFO_EXPIRING_SOON',
-  ACCOUNT_STATUS_COMMERCIAL_INFO_PENDING = 'ACCOUNT_STATUS_COMMERCIAL_INFO_PENDING',
-  ACCOUNT_STATUS_COMMERCIAL_INFO_REJECTED = 'ACCOUNT_STATUS_COMMERCIAL_INFO_REJECTED',
-  ACCOUNT_STATUS_DOCUMENT_APPROVED = 'ACCOUNT_STATUS_DOCUMENT_APPROVED',
-  ACCOUNT_STATUS_DOCUMENT_AWAITING_APPROVAL = 'ACCOUNT_STATUS_DOCUMENT_AWAITING_APPROVAL',
-  ACCOUNT_STATUS_DOCUMENT_PENDING = 'ACCOUNT_STATUS_DOCUMENT_PENDING',
-  ACCOUNT_STATUS_DOCUMENT_REJECTED = 'ACCOUNT_STATUS_DOCUMENT_REJECTED',
-  ACCOUNT_STATUS_GENERAL_APPROVAL_APPROVED = 'ACCOUNT_STATUS_GENERAL_APPROVAL_APPROVED',
-  ACCOUNT_STATUS_GENERAL_APPROVAL_AWAITING_APPROVAL = 'ACCOUNT_STATUS_GENERAL_APPROVAL_AWAITING_APPROVAL',
-  ACCOUNT_STATUS_GENERAL_APPROVAL_PENDING = 'ACCOUNT_STATUS_GENERAL_APPROVAL_PENDING',
-  ACCOUNT_STATUS_GENERAL_APPROVAL_REJECTED = 'ACCOUNT_STATUS_GENERAL_APPROVAL_REJECTED',
-  SUBSCRIPTION_CREATED = 'SUBSCRIPTION_CREATED',
-  SUBSCRIPTION_UPDATED = 'SUBSCRIPTION_UPDATED',
-  SUBSCRIPTION_INACTIVATED = 'SUBSCRIPTION_INACTIVATED',
-  SUBSCRIPTION_DELETED = 'SUBSCRIPTION_DELETED',
-  SUBSCRIPTION_SPLIT_DISABLED = 'SUBSCRIPTION_SPLIT_DISABLED',
-  SUBSCRIPTION_SPLIT_DIVERGENCE_BLOCK = 'SUBSCRIPTION_SPLIT_DIVERGENCE_BLOCK',
-  SUBSCRIPTION_SPLIT_DIVERGENCE_BLOCK_FINISHED = 'SUBSCRIPTION_SPLIT_DIVERGENCE_BLOCK_FINISHED',
-  CHECKOUT_CREATED = 'CHECKOUT_CREATED',
-  CHECKOUT_CANCELED = 'CHECKOUT_CANCELED',
-  CHECKOUT_EXPIRED = 'CHECKOUT_EXPIRED',
-  CHECKOUT_PAID = 'CHECKOUT_PAID',
-  BALANCE_VALUE_BLOCKED = 'BALANCE_VALUE_BLOCKED',
-  BALANCE_VALUE_UNBLOCKED = 'BALANCE_VALUE_UNBLOCKED',
-  INTERNAL_TRANSFER_CREDIT = 'INTERNAL_TRANSFER_CREDIT',
-  INTERNAL_TRANSFER_DEBIT = 'INTERNAL_TRANSFER_DEBIT',
-  ACCESS_TOKEN_CREATED = 'ACCESS_TOKEN_CREATED',
-  ACCESS_TOKEN_DELETED = 'ACCESS_TOKEN_DELETED',
-  ACCESS_TOKEN_DISABLED = 'ACCESS_TOKEN_DISABLED',
-  ACCESS_TOKEN_ENABLED = 'ACCESS_TOKEN_ENABLED',
-  ACCESS_TOKEN_EXPIRED = 'ACCESS_TOKEN_EXPIRED',
-  ACCESS_TOKEN_EXPIRING_SOON = 'ACCESS_TOKEN_EXPIRING_SOON',
-  PIX_AUTOMATIC_RECURRING_AUTHORIZATION_CREATED = 'PIX_AUTOMATIC_RECURRING_AUTHORIZATION_CREATED',
-  PIX_AUTOMATIC_RECURRING_AUTHORIZATION_ACTIVATED = 'PIX_AUTOMATIC_RECURRING_AUTHORIZATION_ACTIVATED',
-  PIX_AUTOMATIC_RECURRING_AUTHORIZATION_CANCELLED = 'PIX_AUTOMATIC_RECURRING_AUTHORIZATION_CANCELLED',
-  PIX_AUTOMATIC_RECURRING_AUTHORIZATION_EXPIRED = 'PIX_AUTOMATIC_RECURRING_AUTHORIZATION_EXPIRED',
-  PIX_AUTOMATIC_RECURRING_AUTHORIZATION_REFUSED = 'PIX_AUTOMATIC_RECURRING_AUTHORIZATION_REFUSED',
-  PIX_AUTOMATIC_RECURRING_PAYMENT_INSTRUCTION_CREATED = 'PIX_AUTOMATIC_RECURRING_PAYMENT_INSTRUCTION_CREATED',
-  PIX_AUTOMATIC_RECURRING_PAYMENT_INSTRUCTION_SCHEDULED = 'PIX_AUTOMATIC_RECURRING_PAYMENT_INSTRUCTION_SCHEDULED',
-  PIX_AUTOMATIC_RECURRING_PAYMENT_INSTRUCTION_REFUSED = 'PIX_AUTOMATIC_RECURRING_PAYMENT_INSTRUCTION_REFUSED',
-  PIX_AUTOMATIC_RECURRING_PAYMENT_INSTRUCTION_CANCELLED = 'PIX_AUTOMATIC_RECURRING_PAYMENT_INSTRUCTION_CANCELLED',
-  PIX_AUTOMATIC_RECURRING_ELIGIBILITY_UPDATED = 'PIX_AUTOMATIC_RECURRING_ELIGIBILITY_UPDATED',
-}
-
-export class WebhookConfigSaveRequestDto {
-  @ApiProperty({ description: 'Nome do Webhook', example: 'Webhook Principal' })
+export class WebhookConfigDto {
+  @ApiProperty({
+    description: 'Nome de identificação do Webhook',
+    example: 'Webhook Cobranças - Arena Central',
+  })
   @IsString()
   @IsNotEmpty()
   name: string;
 
-  @ApiProperty({ description: 'URL de destino dos eventos', example: 'https://www.example.com/webhook/asaas' })
+  @ApiProperty({
+    description: 'URL de destino para o disparo de eventos do Asaas',
+    example: 'https://api.suaplataforma.com.br/payments/webhook/asaas',
+  })
   @IsString()
   @IsNotEmpty()
   url: string;
 
-  @ApiProperty({ description: 'E-mail para notificações do Webhook', example: 'john.doe@asaas.com.br' })
+  @ApiProperty({
+    description: 'E-mail para notificações do Webhook',
+    example: 'admin@arenacentral.com.br',
+  })
   @IsEmail()
-  @IsNotEmpty()
   email: string;
 
-  @ApiProperty({ description: 'Definir se o Webhook está ativo', example: true })
-  @IsBoolean()
-  enabled: boolean;
-
-  @ApiProperty({ description: 'Definir se a fila de sincronização está interrompida', example: false })
-  @IsBoolean()
-  interrupted: boolean;
-
-  @ApiProperty({ description: 'Versão da API', example: 3 })
-  @IsInt()
-  apiVersion: number;
-
-  @ApiProperty({ description: 'Token de autenticação (min 32, max 255 chars)', example: 'whsec_Pxeh17yy3LQbLVpnzz6I1chB7mtzYk5F7pg8bRR80pE' })
+  @ApiPropertyOptional({
+    description: 'Modo de envio das requisições',
+    example: 'SEQUENTIALLY',
+    default: 'SEQUENTIALLY',
+  })
   @IsString()
-  @MinLength(32)
-  @MaxLength(255)
+  @IsOptional()
+  sendType?: string = 'SEQUENTIALLY';
+
+  @ApiPropertyOptional({
+    description: 'Indica se a fila de envio está interrompida',
+    example: false,
+    default: false,
+  })
+  @IsOptional()
+  interrupted?: boolean = false;
+
+  @ApiPropertyOptional({
+    description: 'Habilita ou desabilita o Webhook',
+    example: true,
+    default: true,
+  })
+  @IsOptional()
+  enabled?: boolean = true;
+
+  @ApiPropertyOptional({
+    description: 'Versão da API do Asaas para o payload',
+    example: 3,
+    default: 3,
+  })
+  @IsNumber()
+  @IsOptional()
+  apiVersion?: number = 3;
+
+  @ApiProperty({
+    description: 'Token de autenticação enviado no cabeçalho `asaas-access-token`',
+    example: 'segredo-webhook-32-caracteres-minimo',
+  })
+  @IsString()
+  @IsNotEmpty()
   authToken: string;
 
-  @ApiProperty({ enum: WebhookSendType, example: WebhookSendType.SEQUENTIALLY })
-  @IsEnum(WebhookSendType)
-  sendType: WebhookSendType;
-
-  @ApiProperty({ enum: WebhookEvent, isArray: true, example: [WebhookEvent.PAYMENT_RECEIVED, WebhookEvent.PAYMENT_CONFIRMED] })
+  @ApiProperty({
+    description: 'Lista de eventos que disparam este Webhook',
+    example: ['PAYMENT_CREATED', 'PAYMENT_UPDATED', 'PAYMENT_CONFIRMED', 'PAYMENT_RECEIVED'],
+    type: [String],
+  })
   @IsArray()
-  @IsEnum(WebhookEvent, { each: true })
-  events: WebhookEvent[];
+  @IsString({ each: true })
+  events: string[];
 }
 
 export class CreateSubAccountDto {
-  @ApiProperty({ description: 'Nome da subconta', example: 'John Doe' })
+  @ApiProperty({
+    description: 'Token de convite gerado na fase de registro/checkout da arena',
+    example: '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d',
+  })
   @IsString()
-  @IsNotEmpty()
-  name: string;
-
-  @ApiProperty({ description: 'Email da subconta', example: 'john.doe@asaas.com.br' })
-  @IsEmail()
-  @IsNotEmpty()
-  email: string;
-
-  @ApiProperty({ description: 'Token de autenticação', example: 'whsec_Pxeh17yy3LQbLVpnzz6I1chB7mtzYk5F7pg8bRR80pE' })
-  @IsString()
-  @IsNotEmpty()
+  @IsNotEmpty({ message: 'O token de convite é obrigatório.' })
   token?: string;
 
-  @ApiPropertyOptional({ description: 'Email de login (se omitido, usa o email da subconta)', example: 'johndoe@asaas.com.br' })
-  @IsEmail()
-  @IsOptional()
-  loginEmail?: string;
-
-  @ApiProperty({ description: 'CPF ou CNPJ do proprietário', example: '35381637000150' })
+  @ApiProperty({
+    description: 'Nome da arena ou razão social do estabelecimento',
+    example: 'Arena Central de Beach Tennis',
+  })
   @IsString()
-  @IsNotEmpty()
-  cpfCnpj: string;
+  @IsNotEmpty({ message: 'O nome da arena é obrigatório.' })
+  name: string;
 
-  @ApiPropertyOptional({ description: 'Data de nascimento (AAAA-MM-DD) para Pessoa Física', example: '1995-04-12' })
+  @ApiProperty({
+    description: 'E-mail principal do responsável ou da subconta',
+    example: 'contato@arenacentral.com.br',
+  })
+  @IsEmail({}, { message: 'Informe um e-mail válido.' })
+  @IsNotEmpty({ message: 'O e-mail é obrigatório.' })
+  email: string;
+
+  @ApiPropertyOptional({
+    description: 'CNPJ ou CPF do responsável/arena (apenas números ou formatado)',
+    example: '12345678000195',
+  })
+  @IsOptional()
   @IsString()
-  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'birthDate deve estar no formato YYYY-MM-DD' })
-  @IsOptional()
-  birthDate?: string;
+  @Matches(/^(\d{11}|\d{14}|\d{3}\.\d{3}\.\d{3}-\d{2}|\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})$/, {
+    message: 'CPF ou CNPJ inválido.',
+  })
+  cpfCnpj?: string;
 
-  @ApiPropertyOptional({ enum: CompanyType, description: 'Tipo da empresa (somente para Pessoa Jurídica)', example: CompanyType.MEI })
-  @IsEnum(CompanyType)
+  @ApiPropertyOptional({
+    description: 'Tipo de empresa no Asaas (MEI, LIMITED, INDIVIDUAL, ASSOCIATION, etc.)',
+    example: 'LIMITED',
+  })
   @IsOptional()
-  companyType?: CompanyType;
-
-  @ApiPropertyOptional({ description: 'Telefone fixo', example: '1130000000' })
   @IsString()
+  companyType?: string;
+
+  @ApiPropertyOptional({
+    description: 'Telefone comercial/fixo com DDD',
+    example: '1133334444',
+  })
   @IsOptional()
+  @IsString()
   phone?: string;
 
-  @ApiProperty({ description: 'Telefone celular', example: '11999999999' })
-  @IsString()
-  @IsNotEmpty()
-  mobilePhone: string;
-
-  @ApiPropertyOptional({ description: 'Site da subconta', example: 'https://www.example.com' })
-  @IsString()
+  @ApiPropertyOptional({
+    description: 'Telefone celular/WhatsApp com DDD',
+    example: '11999998888',
+  })
   @IsOptional()
-  site?: string;
-
-  @ApiProperty({ description: 'Faturamento/Renda mensal', example: 25000 })
-  @IsNumber()
-  incomeValue: number;
-
-  @ApiProperty({ description: 'Logradouro', example: 'Rua Fernando Orlandi' })
   @IsString()
-  @IsNotEmpty()
+  mobilePhone?: string;
+
+  @ApiPropertyOptional({
+    description: 'Faturamento ou renda mensal estimada em R$',
+    example: 15000,
+    default: 10000,
+  })
+  @IsOptional()
+  @IsNumber({}, { message: 'A renda/faturamento deve ser um valor numérico.' })
+  incomeValue?: number;
+
+  @ApiProperty({
+    description: 'Logradouro (Rua, Avenida, etc.)',
+    example: 'Av. Paulista',
+  })
+  @IsString()
+  @IsNotEmpty({ message: 'O endereço é obrigatório.' })
   address: string;
 
-  @ApiProperty({ description: 'Número do endereço', example: '544' })
+  @ApiProperty({
+    description: 'Número do endereço',
+    example: '1000',
+  })
   @IsString()
-  @IsNotEmpty()
+  @IsNotEmpty({ message: 'O número do endereço é obrigatório.' })
   addressNumber: string;
 
-  @ApiPropertyOptional({ description: 'Complemento do endereço', example: 'Sala 2' })
-  @IsString()
+  @ApiPropertyOptional({
+    description: 'Complemento do endereço',
+    example: 'Bloco B - Sala 201',
+  })
   @IsOptional()
+  @IsString()
   complement?: string;
 
-  @ApiProperty({ description: 'Bairro', example: 'Jardim Pedra Branca' })
+  @ApiProperty({
+    description: 'Bairro/Província',
+    example: 'Bela Vista',
+  })
   @IsString()
-  @IsNotEmpty()
+  @IsNotEmpty({ message: 'O bairro é obrigatório.' })
   province: string;
 
-  @ApiProperty({ description: 'CEP do endereço (deve ser válido para localizar a cidade)', example: '14079-452' })
+  @ApiProperty({
+    description: 'CEP do endereço (com ou sem hífen)',
+    example: '01310100',
+  })
   @IsString()
-  @IsNotEmpty()
+  @IsNotEmpty({ message: 'O CEP é obrigatório.' })
   postalCode: string;
 
-   @ApiProperty({ description: 'Cidade', example: 'Ribeirão Preto' })
+  @ApiProperty({
+    description: 'Cidade',
+    example: 'São Paulo',
+  })
   @IsString()
-  @IsNotEmpty()
-  city: string;
+  @IsNotEmpty({ message: 'A cidade é obrigatória.' })
+  city?: string;
 
-  @ApiProperty({ description: 'Estado (UF) do endereço', example: 'SP' })
+  @ApiProperty({
+    description: 'Sigla do Estado (UF com 2 letras)',
+    example: 'SP',
+  })
   @IsString()
-  @IsNotEmpty()
-  state: string;
+  @Length(2, 2, { message: 'O Estado deve conter exatamente 2 caracteres (ex: SP).' })
+  @IsNotEmpty({ message: 'O Estado é obrigatório.' })
+  state?: string;
 
-  @ApiPropertyOptional({ type: [WebhookConfigSaveRequestDto], description: 'Configurações de Webhooks' })
+  @ApiPropertyOptional({
+    description: 'Configuração dos Webhooks para a subconta no Asaas BaaS',
+    type: [WebhookConfigDto],
+  })
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => WebhookConfigSaveRequestDto)
-  @IsOptional()
-  webhooks?: WebhookConfigSaveRequestDto[];
+  @Type(() => WebhookConfigDto)
+  webhooks?: WebhookConfigDto[];
 }

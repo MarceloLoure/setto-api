@@ -1,9 +1,9 @@
 import { HttpException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance, AxiosError } from 'axios';
-import { CreateSubaccountDto } from './dto/create-subaccount.dto';
 import { CreatePaymentSplitDto } from './dto/create-payment-split.dto';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
+import { CreateSubAccountDto } from 'src/arenas/dto/create-arena-request.dto';
 
 @Injectable()
 export class AsaasService {
@@ -48,7 +48,7 @@ export class AsaasService {
    * Cria a subconta Asaas de uma arena (whitelabel/onboarding), necessária
    * pra receber o valor líquido do split das reservas e das mensalidades.
    */
-  async createSubaccount(arenaData: CreateSubaccountDto) {
+  async createSubaccount(arenaData: CreateSubAccountDto) {
     try {
       const { data: subaccount } = await this.http.post('/accounts', arenaData);
       return subaccount;

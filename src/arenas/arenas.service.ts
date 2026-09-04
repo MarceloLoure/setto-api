@@ -10,7 +10,7 @@ import { Prisma, Role, BookingStatus, Sport } from '@prisma/client';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { FirebaseStorageService } from '../storage/storage.service';
-import { CompanyType, CreateSubAccountDto } from './dto/create-arena-request.dto';
+import { CreateSubAccountDto } from './dto/create-arena-request.dto';
 import { FindArenaFollowersQueryDto } from './dto/find-arena-followers-query.dto';
 import { FindArenasQueryDto } from './dto/find-arenas-query.dto';
 import { UpdateArenaDto } from './dto/update-arena.dto';
@@ -84,25 +84,57 @@ export class ArenasService {
       }
     }
 
-    // 4. Onboarding Financeiro no Asaas (Criação/Atualização da Subconta)
+    // 4. Tratamento e Sanitização de Dados para o BaaS do Asaas
     const cpfCnpjForOnboarding = cleanedCnpj || (user.cpf ? user.cpf.replace(/\D/g, '') : null);
+    const cleanPhone = (dto.phone || user.phone || '').replace(/\D/g, '');
+    const cleanMobilePhone = (dto.mobilePhone || dto.phone || user.phone || '').replace(/\D/g, '');
+    const cleanPostalCode = dto.postalCode ? dto.postalCode.replace(/\D/g, '') : '';
 
+    if (!cleanPostalCode || cleanPostalCode.length !== 8) {
+      throw new BadRequestException('O CEP deve conter exatamente 8 dígitos numéricos.');
+    }
+
+    const webhookSecret = process.env.ASAAS_WEBHOOK_SECRET || 'default-webhook-secret-min-32-chars';
+
+    // Configuração dos webhooks exigidos no BaaS
+    const defaultWebhooks = [
+      {
+        name: `Webhook Cobranças — ${dto.name}`,
+        url: `${process.env.BACKEND_URL}/asaas/webhooks`,
+        email: dto.email,
+        sendType: 'SEQUENTIALLY',
+        interrupted: false,
+        enabled: true,
+        apiVersion: 3,
+        authToken: webhookSecret,
+        events: ['PAYMENT_CREATED', 'PAYMENT_UPDATED', 'PAYMENT_CONFIRMED', 'PAYMENT_RECEIVED'],
+      },
+    ];
+
+    // Executa o onboarding BaaS enviando o payload padronizado
     const asaasOnboarding = await this.attemptAsaasOnboarding(existingArena.id, {
+      token: dto.token,
       name: dto.name,
-      email: user.email,
+      email: inviteToken.email || user.email,
       cpfCnpj: cpfCnpjForOnboarding,
-      phone: user.phone || dto.phone, // Garante que o celular seja capturado
-      incomeValue: dto.incomeValue || 10000, // Informe a renda/faturamento
+      companyType: dto.companyType || (cpfCnpjForOnboarding?.length === 14 ? 'LIMITED' : 'MEI'),
+      phone: cleanPhone,
+      mobilePhone: cleanMobilePhone,
+      incomeValue: Number(dto.incomeValue || 10000),
       address: dto.address,
       addressNumber: dto.addressNumber,
+      complement: dto.complement,
       province: dto.province,
-      postalCode: dto.postalCode ? dto.postalCode.replace(/\D/g, '') : undefined,
+      postalCode: cleanPostalCode,
+      city: dto.city,
+      state: dto.state,
+      webhooks: dto.webhooks && dto.webhooks.length > 0 ? dto.webhooks : defaultWebhooks,
     });
 
     // 5. Execução da Transação no Banco de Dados
     try {
       const result = await this.prisma.$transaction(async (tx) => {
-        // Atualiza os dados da Arena EXISTENTE (não cria uma nova)
+        // Atualiza os dados da Arena EXISTENTE
         const updatedArena = await tx.arena.update({
           where: { id: existingArena.id },
           data: {
@@ -112,9 +144,9 @@ export class ArenasService {
             number: dto.addressNumber,
             complement: dto.complement,
             neighborhood: dto.province,
-            zipCode: dto.postalCode ? dto.postalCode.replace(/\D/g, '') : null,
+            zipCode: cleanPostalCode,
             city: dto.city,
-            state: dto.state.toUpperCase(),
+            state: dto.state!.toUpperCase(),
             isActive: true,
             asaasAccountId: asaasOnboarding.success ? asaasOnboarding.asaasAccountId : existingArena.asaasAccountId,
             asaasWalletId: asaasOnboarding.success ? asaasOnboarding.asaasWalletId : existingArena.asaasWalletId,
@@ -159,7 +191,7 @@ export class ArenasService {
       });
 
       return {
-        message: 'Cadastro da arena concluído e usuário promovido a ARENA_ADMIN.',
+        message: 'Cadastro da arena concluído no modelo BaaS e usuário promovido a ARENA_ADMIN.',
         accessToken: newAccessToken,
         arena: result.arena,
         asaasOnboarding,
@@ -189,55 +221,73 @@ export class ArenasService {
    * tentativa falha (Asaas fora do ar, dados incompletos etc.).
    */
   private async attemptAsaasOnboarding(arenaId: string, data: any) {
-    try {
-      // 1. Garante que CPF/CNPJ exista e contenha apenas números
-      const cleanCpfCnpj = data.cpfCnpj ? data.cpfCnpj.replace(/\D/g, '') : null;
-      if (!cleanCpfCnpj) {
-        throw new BadRequestException('CPF ou CNPJ é obrigatório para o cadastro financeiro no Asaas.');
-      }
-
-      // 2. Sanitização do telefone/celular
-      const cleanPhone = data.phone ? data.phone.replace(/\D/g, '') : null;
-      if (!cleanPhone) {
-        throw new BadRequestException('Telefone celular válido é obrigatório para o cadastro no Asaas.');
-      }
-
-      // 3. Montagem do payload aderente ao CreateSubAccountDto
-      const subaccountPayload: CreateSubAccountDto = {
-        name: data.name,
-        email: data.email,
-        cpfCnpj: cleanCpfCnpj,
-        mobilePhone: cleanPhone,
-        incomeValue: data.incomeValue || 5000, // Valor estimado padrão se não vier no DTO
-        address: data.address,
-        addressNumber: data.addressNumber,
-        province: data.province,
-        city: data.city,
-        state: data.state,
-        postalCode: data.postalCode ? data.postalCode.replace(/\D/g, '') : '',
-        companyType: data.companyType || CompanyType.MEI,
-      };
-
-      // 4. Chamada do serviço Asaas
-      const asaasResponse = await this.asaasService.createSubaccount(subaccountPayload);
-
-      return {
-        success: true,
-        asaasAccountId: asaasResponse.id,
-        asaasWalletId: asaasResponse.walletId,
-        apiKey: asaasResponse.accessToken?.apiKey, // Chave individual gerada da subconta
-      };
-    } catch (error: any) {
-      this.logger.error(`[Asaas Onboarding] Erro ao criar subconta para arena ${arenaId}: ${error.message}`);
-      
-      return {
-        success: false,
-        error: error.message || 'Falha no onboarding Asaas',
-        asaasAccountId: null,
-        asaasWalletId: null,
-      };
+  try {
+    // 1. Garante que CPF/CNPJ exista e contenha apenas números
+    const cleanCpfCnpj = data.cpfCnpj ? data.cpfCnpj.replace(/\D/g, '') : null;
+    if (!cleanCpfCnpj) {
+      throw new BadRequestException('CPF ou CNPJ é obrigatório para o cadastro financeiro no Asaas.');
     }
+
+    // 2. Sanitização estrita de telefone e celular (Apenas dígitos)
+    const cleanPhone = data.phone ? data.phone.replace(/\D/g, '') : null;
+    const cleanMobilePhone = data.mobilePhone ? data.mobilePhone.replace(/\D/g, '') : cleanPhone;
+
+    if (!cleanMobilePhone) {
+      throw new BadRequestException('Telefone celular válido é obrigatório para o cadastro no Asaas.');
+    }
+
+    // 3. Sanitização do CEP (Extamente 8 dígitos numéricos)
+    const cleanPostalCode = data.postalCode ? data.postalCode.replace(/\D/g, '') : '';
+    if (!cleanPostalCode || cleanPostalCode.length !== 8) {
+      throw new BadRequestException('O CEP deve conter exatamente 8 dígitos numéricos.');
+    }
+
+    // 4. Montagem do DTO tipado e sanitizado
+    const subaccountPayload: CreateSubAccountDto = {
+      name: data.name,
+      cpfCnpj: cleanCpfCnpj,
+      email: data.email, 
+      companyType: data.companyType || 'MEI',
+      phone: cleanPhone || undefined,
+      mobilePhone: cleanMobilePhone,
+      incomeValue: Number(data.incomeValue || 10000),
+      address: data.address,
+      addressNumber: data.addressNumber,
+      complement: data.complement || undefined,
+      province: data.province,
+      postalCode: cleanPostalCode,
+      city: data.city,
+      state: data.state,
+      token: data.token,
+      webhooks: data.webhooks || [],
+    };
+
+    // 5. Chamada do AsaasService
+    const asaasResponse = await this.asaasService.createSubaccount(subaccountPayload);
+
+    this.logger.log(`[Asaas Onboarding] Subconta criada com sucesso para a Arena ${arenaId}. AsaasAccount ID: ${asaasResponse.id}`);
+
+    return {
+      success: true,
+      asaasAccountId: asaasResponse.id,
+      asaasWalletId: asaasResponse.walletId,
+      apiKey: asaasResponse.apiKey || asaasResponse.accessToken?.apiKey, // Suporta retorno direto ou via objeto accessToken
+    };
+  } catch (error: any) {
+    this.logger.error(
+      `[Asaas Onboarding] Erro ao criar subconta para a Arena ${arenaId}: ${error?.response?.data?.errors?.[0]?.description || error.message}`,
+      error.stack,
+    );
+
+    return {
+      success: false,
+      error: error?.response?.data?.errors?.[0]?.description || error.message || 'Falha no onboarding Asaas',
+      asaasAccountId: null,
+      asaasWalletId: null,
+      apiKey: null,
+    };
   }
+}
 
   /** Endpoint de retry: dono da arena tenta de novo o onboarding Asaas que falhou na criação. */
   async retryAsaasOnboarding(arenaId: string, user: any) {

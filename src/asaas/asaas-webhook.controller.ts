@@ -17,7 +17,7 @@ export class AsaasWebhookController {
   @UsePipes(
     new ValidationPipe({
       whitelist: false,
-      forbidNonWhitelisted: false, // <-- Permite os campos extras do Asaas sem estourar 400
+      forbidNonWhitelisted: false,
       transform: true,
     }),
   )
