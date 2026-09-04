@@ -106,21 +106,45 @@ export class AsaasService {
   }
 
   async updateCustomer(id: string, data: any) {
-    const response = await this.http.post(`/v3/customers/${id}`, data);
-    return response.data;
+    try {
+      const { data: customer } = await this.http.post(`/customers/${id}`, data);
+      return customer;
+    } catch (error) {
+      this.handleError('updateCustomer', error);
+    }
   }
 
   async findCustomerByCpfCnpj(cpfCnpj: string) {
-    const response = await this.http.get('/v3/customers', {
-      params: { cpfCnpj },
-    });
-    return response.data;
+    try {
+      const { data } = await this.http.get('/customers', {
+        params: { cpfCnpj },
+      });
+      return data;
+    } catch (error) {
+      this.handleError('findCustomerByCpfCnpj', error);
+    }
   }
 
   async findCustomerByEmail(email: string) {
-    const response = await this.http.get('/v3/customers', {
-      params: { email },
-    });
-    return response.data;
+    try {
+      const { data } = await this.http.get('/customers', {
+        params: { email },
+      });
+      return data;
+    } catch (error) {
+      this.handleError('findCustomerByEmail', error);
+    }
+  }
+
+  /**
+   * Cancela/remove uma cobrança pendente no Asaas.
+   */
+  async cancelPayment(paymentId: string) {
+    try {
+      const { data } = await this.http.delete(`/payments/${paymentId}`);
+      return data;
+    } catch (error) {
+      this.handleError('cancelPayment', error);
+    }
   }
 }

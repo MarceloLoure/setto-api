@@ -7,7 +7,14 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   // Habilita CORS para permitir que requisições do App (Flutter) e Web (Next.js) passem sem bloqueios
-  app.enableCors();
+  app.enableCors({
+    origin: [
+      'https://settoarenas.com.br',
+      'https://www.settoarenas.com.br',
+      'http://localhost:3000',
+    ],
+    credentials: true,
+  });
 
   // Garante que os DTOs validem automaticamente os campos recebidos no body da requisição
   app.useGlobalPipes(

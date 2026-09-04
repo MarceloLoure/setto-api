@@ -19,6 +19,7 @@ import { HomeModule } from './home/home.module';
 import { AsaasModule } from './asaas/asaas.module';
 import { PaymentsModule } from './payments/payments.module';
 import { PublicModule } from './modules/public/public.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { PublicModule } from './modules/public/public.module';
     //     ),
     //   }),
     // }),
+    ScheduleModule.forRoot(),
     FirebaseModule,
     ThrottlerModule.forRoot([
       {
