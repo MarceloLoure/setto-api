@@ -1,11 +1,21 @@
 import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
+import { Public } from './decorators/public.decorator';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { RegisterDto } from './dto/register.dto';
 import { SocialLoginDto } from './dto/social-login.dto';
 import { FirebaseLoginDto } from './dto/firebase-login.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 
 @ApiTags('Auth')
 @Controller('auth')
@@ -48,5 +58,71 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   login(@Body() loginDto: LoginDto) {
     return this.authService.login(loginDto);
+  }
+
+  @Public()
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Solicitar redefinição de senha',
+    description: 'Gera um token JWT temporário e envia por e-mail as instruções para redefinição de senha.',
+  })
+  @ApiBody({
+    type: ForgotPasswordDto,
+    examples: {
+      exemploPadrao: {
+        summary: 'Exemplo de solicitação',
+        value: {
+          email: 'atleta@email.com',
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Instruções de redefinição enviadas (ou aceitas com sucesso).',
+    schema: {
+      example: {
+        message: 'Se o e-mail estiver cadastrado, você receberá as instruções de redefinição.',
+      },
+    },
+  })
+  @ApiResponse({ status: 400, description: 'E-mail em formato inválido.' })
+  async forgotPassword(@Body() forgotPasswordDto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(forgotPasswordDto);
+  }
+
+  @Public()
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Redefinir a senha com o token',
+    description: 'Valida o token JWT recebido no e-mail e atualiza a senha do usuário.',
+  })
+  @ApiBody({
+    type: ResetPasswordDto,
+    examples: {
+      exemploPadrao: {
+        summary: 'Exemplo de redefinição de senha',
+        value: {
+          token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+          password: 'NovaSenha#123',
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Senha redefinida com sucesso.',
+    schema: {
+      example: {
+        message: 'Senha redefinida com sucesso!',
+      },
+    },
+  })
+  @ApiResponse({ status: 400, description: 'Token de redefinição inválido, expirado ou senha fraca.' })
+  @ApiResponse({ status: 404, description: 'Usuário não encontrado.' })
+  async resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
+    return this.authService.resetPassword(resetPasswordDto);
   }
 }

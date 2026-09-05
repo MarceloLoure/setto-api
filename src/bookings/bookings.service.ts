@@ -161,6 +161,7 @@ export class BookingsService {
           bookingId: newBooking.id,
           userId: newBooking.userId,
           createdById: user.id,
+          expiresAt: expiresAt
         },
       });
 
@@ -175,19 +176,25 @@ export class BookingsService {
         split: [{ walletId: arenaWalletId, percentualValue: arenaSharePercent }],
       });
 
-      await this.prisma.payment.update({
-        where: { id: localPayment.id },
-        data: { asaasPaymentId: asaasPayment.id },
-      });
+      let pixCopiaECola: string | undefined = undefined;
 
-      // 9. Retorna detalhes do pagamento
+      // 9. Retorna detalhes do pagamento e atualiza a chave PIX se for o caso
       let paymentDetails: any = { asaasPaymentId: asaasPayment.id, billingType: dto.billingType };
       if (dto.billingType === 'PIX') {
         const qrCode = await this.asaasService.getPixQrCode(asaasPayment.id);
+        pixCopiaECola = qrCode.payload;
         paymentDetails.pix = qrCode;
       } else {
         paymentDetails.invoiceUrl = asaasPayment.invoiceUrl;
       }
+
+      await this.prisma.payment.update({
+        where: { id: localPayment.id },
+        data: { 
+          asaasPaymentId: asaasPayment.id,
+          pixCopiaECola: pixCopiaECola,
+        },
+      });
 
       return {
         booking: newBooking,
@@ -286,9 +293,24 @@ export class BookingsService {
       throw error;
     }
 
+    let pixCopiaECola: string | undefined = undefined;
+    let responsePayload: any = { asaasPaymentId: asaasPayment.id, billingType: dto.billingType };
+
+    if (dto.billingType === 'PIX') {
+      const qrCode = await this.asaasService.getPixQrCode(asaasPayment.id);
+      pixCopiaECola = qrCode.payload;
+      responsePayload.pix = qrCode;
+    } else {
+      responsePayload.invoiceUrl = asaasPayment.invoiceUrl;
+    }
+
     await this.prisma.payment.update({
       where: { id: localPayment.id },
-      data: { asaasPaymentId: asaasPayment.id },
+      data: { 
+        asaasPaymentId: asaasPayment.id,
+        pixCopiaECola: pixCopiaECola,
+        expiresAt: booking.expiresAt,
+      }
     });
 
     if (dto.billingType === 'PIX') {
@@ -720,6 +742,9 @@ export class BookingsService {
             method: true,
             status: true,
             paidAt: true,
+            pixCopiaECola: true,
+            expiresAt: true,
+            asaasPaymentId: true,
           },
         },
         participants: {

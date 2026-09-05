@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { ConflictException, Injectable, UnauthorizedException, BadRequestException, NotFoundException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
@@ -7,6 +7,9 @@ import { RegisterDto } from './dto/register.dto';
 import { SocialLoginDto } from './dto/social-login.dto';
 import { FirebaseService } from '../firebase/firebase.service';
 import { Role } from '@prisma/client';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { MailService } from 'src/email/mail.service';
 
 @Injectable()
 export class AuthService {
@@ -14,6 +17,7 @@ export class AuthService {
     private prisma: PrismaService,
     private jwtService: JwtService,
     private readonly firebaseService: FirebaseService,
+    private mailService: MailService,
   ) {}
 
   // Cadastro Manual (E-mail + Senha)
@@ -262,5 +266,61 @@ export class AuthService {
         isManager: user.arenasManaged.length > 0 || user.role === Role.SUPERADMIN,
       },
     };
+  }
+
+  async forgotPassword(forgotPasswordDto: ForgotPasswordDto) {
+    const { email } = forgotPasswordDto;
+
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!user) {
+      return { message: 'Se o e-mail estiver cadastrado, você receberá as instruções de redefinição.' };
+    }
+
+    const resetToken = this.jwtService.sign(
+      { sub: user.id, email: user.email, type: 'reset-password' },
+      { expiresIn: '30m' },
+    );
+
+    // Envia o e-mail via Resend
+    await this.mailService.sendPasswordResetEmail(user.email, user.name, resetToken);
+
+    return {
+      message: 'Se o e-mail estiver cadastrado, você receberá as instruções de redefinição.',
+    };
+  }
+
+  async resetPassword(resetPasswordDto: ResetPasswordDto) {
+    const { token, password } = resetPasswordDto;
+
+    let payload: any;
+    try {
+      payload = this.jwtService.verify(token);
+    } catch (error) {
+      throw new BadRequestException('Token de redefinição inválido ou expirado.');
+    }
+
+    if (payload.type !== 'reset-password') {
+      throw new BadRequestException('Token de tipo inválido.');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Usuário não encontrado.');
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { password: hashedPassword },
+    });
+
+    return { message: 'Senha redefinida com sucesso!' };
   }
 }

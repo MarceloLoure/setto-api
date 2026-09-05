@@ -366,6 +366,8 @@ model Payment {
 
   // Referência da cobrança na Asaas (pay_xxxxxx), quando gerada via checkout online
   asaasPaymentId String? @unique
+  pixCopiaECola  String?
+  expiresAt      DateTime?
 
   // Vinculo com a Arena
   arenaId String

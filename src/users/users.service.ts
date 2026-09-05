@@ -40,7 +40,36 @@ export class UsersService {
     });
 
     if (!user) throw new NotFoundException('Usuário não encontrado.');
-    return user;
+
+    const pendingPayments = await this.prisma.payment.findMany({
+      where: {
+        userId,
+        status: 'PENDING',
+        OR: [
+          { expiresAt: { gte: new Date() } },
+          { expiresAt: null }, // Caso seja cobrança sem expiração
+        ],
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      select: {
+        id: true,
+        description: true,
+        amount: true,
+        method: true,
+        category: true,
+        status: true,
+        paidAt: true,
+        asaasPaymentId: true,
+        createdAt: true,
+      },
+    });
+
+    return {
+      ...user,
+      pendingPayments,
+    };
   }
 
   async updateProfile(
@@ -174,6 +203,28 @@ export class UsersService {
         cover: {
           select: { id: true, name: true, path: true },
         },
+      },
+    });
+  }
+
+  async getUserPayments(userId: string) {
+    return this.prisma.payment.findMany({
+      where: { userId },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      select: {
+        id: true,
+        description: true,
+        amount: true,
+        method: true,
+        category: true,
+        status: true,
+        paidAt: true,
+        asaasPaymentId: true,
+        expiresAt: true,
+        pixCopiaECola: true,
+        createdAt: true,
       },
     });
   }

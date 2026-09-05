@@ -90,4 +90,11 @@ export class UsersController {
   ) {
     return this.usersService.updateProfile(userId, dto, files);
   }
+
+  @Get('me/payments')
+  @ApiOperation({ summary: 'Lista o histórico completo de pagamentos do usuário' })
+  @ApiResponse({ status: 200, description: 'Histórico de pagamentos retornado com sucesso.' })
+  async getMyPayments( @CurrentUser('id') userId: string,) {
+    return this.usersService.getUserPayments(userId);
+  }
 }
