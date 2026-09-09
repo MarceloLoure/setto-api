@@ -39,7 +39,7 @@ export class CreateAppBookingDto {
   @IsOptional()
   creditCardToken?: string;
 
- @ApiPropertyOptional({ type: CreditCardDetailsDto })
+  @ApiPropertyOptional({ type: CreditCardDetailsDto })
   @ValidateIf((o) => o.billingType === AsaasBillingType.CREDIT_CARD && !o.creditCardToken && !o.cardId)
   @IsNotEmpty({ message: 'creditCard é obrigatório quando não informado um cartão salvo ou token' })
   @ValidateNested()

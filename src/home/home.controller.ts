@@ -1,5 +1,5 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, UseGuards, Query } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags, ApiQuery } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { HomeService } from './home.service';
@@ -13,7 +13,8 @@ export class HomeController {
 
   @Get()
   @ApiOperation({ summary: 'Obter tela inicial componentizada com dados personalizados do usuário' })
-  getHomeFeed(@CurrentUser('id') userId: string) {
-    return this.homeService.getHomeFeed(userId);
+  @ApiQuery({ name: 'userCity', required: false, description: 'Cidade atual informada pelo app (GPS/Seleção)' })
+  getHomeFeed(@CurrentUser('id') userId: string, @Query('userCity') userCity?: string,) {
+    return this.homeService.getHomeFeed(userId, userCity ? { userCity: userCity } : undefined);
   }
 }

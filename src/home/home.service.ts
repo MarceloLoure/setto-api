@@ -11,6 +11,18 @@ import { CreateBannerDto } from './dto/create-banner.dto';
 import { CreateHomeSectionDto, ReorderHomeSectionsDto } from './dto/create-home-section.dto';
 import { BannerActionType } from '@prisma/client';
 
+interface LocationFilter {
+  userCity?: string;
+}
+
+function normalizeSearchString(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // Remove acentos
+    .replace(/[^a-zA-Z0-9]/g, '')    // Remove espaços e pontuações
+    .toLowerCase();
+}
+
 @Injectable()
 export class HomeService {
   constructor(
@@ -21,7 +33,7 @@ export class HomeService {
   // =========================================================================
   // 1. RESOLVER A HOME DINÂMICA DO ATLETA (Server-Driven UI)
   // =========================================================================
-  async getHomeFeed(userId: string) {
+  async getHomeFeed(userId: string, locationParams?: LocationFilter) {
     const now = new Date();
 
     const user = await this.prisma.user.findUnique({
@@ -30,6 +42,8 @@ export class HomeService {
     });
 
     if (!user) throw new NotFoundException('Usuário não encontrado.');
+
+    const targetCity = locationParams?.userCity?.trim() || user.city;
 
     const activeSections = await this.prisma.homeSection.findMany({
       where: { isActive: true },
@@ -162,32 +176,64 @@ export class HomeService {
           }
           break;
 
-        // -------------------------------------------------------------
-        // ARENAS NA CIDADE (Com Fallback Dinâmico)
-        // -------------------------------------------------------------
         case HomeSectionType.CITY_ARENAS:
-          if (user.city) {
-            dynamicTitle = `Arenas em ${user.city}`;
-            sectionData = await this.prisma.arena.findMany({
-              where: {
-                isActive: true,
-                city: { equals: user.city, mode: 'insensitive' },
-              },
-              take: 10,
-              select: {
-                id: true,
-                name: true,
-                neighborhood: true,
-                city: true,
-                state: true,
-                logo: { select: { id: true, path: true } },
-                cover: { select: { id: true, path: true } },
-                _count: { select: { courts: true, followers: true } },
-              },
-            });
+          if (targetCity) {
+            const normalizedCity = normalizeSearchString(targetCity);
+
+            const rawArenas = await this.prisma.$queryRaw<
+              Array<{
+                id: string;
+                name: string;
+                neighborhood: string | null;
+                city: string;
+                state: string;
+                logo_path: string | null;
+                logo_id: string | null;
+                cover_path: string | null;
+                cover_id: string | null;
+                courts_count: bigint;
+                followers_count: bigint;
+              }>
+            >`
+              SELECT 
+                a.id, 
+                a.name, 
+                a.neighborhood, 
+                a.city, 
+                a.state,
+                l.path AS logo_path,
+                l.id AS logo_id,
+                c.path AS cover_path,
+                c.id AS cover_id,
+                (SELECT COUNT(*) FROM "courts" ct WHERE ct."arenaId" = a.id) AS courts_count,
+                (SELECT COUNT(*) FROM "arena_followers" f WHERE f."arenaId" = a.id) AS followers_count
+              FROM "arenas" a
+              LEFT JOIN "files" l ON l."arenaIdLogo" = a.id
+              LEFT JOIN "files" c ON c."arenaIdCover" = a.id
+              WHERE a."isActive" = true
+                AND LOWER(REGEXP_REPLACE(UNACCENT(a.city), '[^a-zA-Z0-9]', '', 'g')) = ${normalizedCity}
+              LIMIT 10;
+            `;
+
+            if (rawArenas.length > 0) {
+              dynamicTitle = `Arenas em ${rawArenas[0].city}`;
+              sectionData = rawArenas.map((arena) => ({
+                id: arena.id,
+                name: arena.name,
+                neighborhood: arena.neighborhood,
+                city: arena.city,
+                state: arena.state,
+                logo: arena.logo_path ? { id: arena.logo_id, path: arena.logo_path } : null,
+                cover: arena.cover_path ? { id: arena.cover_id, path: arena.cover_path } : null,
+                _count: {
+                  courts: Number(arena.courts_count),
+                  followers: Number(arena.followers_count),
+                },
+              }));
+            }
           }
 
-          // Se o usuário não tem cidade ou a cidade dele não tem arena cadastrada
+          // Fallback se targetCity for nulo ou se não houver arenas encontradas na cidade
           if (!sectionData || sectionData.length === 0) {
             dynamicTitle = 'Arenas Principais';
             dynamicSubtitle = 'As melhores estruturas esportivas';
@@ -208,7 +254,6 @@ export class HomeService {
             });
           }
           break;
-
         // -------------------------------------------------------------
         // RECOMENDAÇÕES / EM ALTA
         // -------------------------------------------------------------
