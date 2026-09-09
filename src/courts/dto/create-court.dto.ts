@@ -10,6 +10,9 @@ import {
   IsString,
   IsUUID,
   Min,
+  IsPositive,
+  Max,
+  IsInt
 } from 'class-validator';
 
 export class CreateCourtDto {
