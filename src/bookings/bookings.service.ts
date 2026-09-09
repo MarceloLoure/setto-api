@@ -656,17 +656,26 @@ export class BookingsService {
   }
 
   private async fetchAndValidateCourtAvailability(tx: any, courtId: string, start: Date, end: Date) {
-    // Extrai dia da semana e "dia calendário" no horário de Brasília — usar
-    // toLocaleString + reparse (em vez de getUTCDay/setUTCHours direto em
-    // `start`) evita erro perto da virada de dia: um `start` de madrugada em
-    // UTC pode já ser o dia anterior em Brasília, e vice-versa.
-    const localStartStr = start.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' });
-    const localStartDate = new Date(localStartStr);
+    // 1. Extrai a data local (Ano, Mês, Dia) no fuso de Brasília
+    const formatter = new Intl.DateTimeFormat('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+
+    const parts = formatter.formatToParts(start);
+    const year = parts.find((p) => p.type === 'year')?.value;
+    const month = parts.find((p) => p.type === 'month')?.value;
+    const day = parts.find((p) => p.type === 'day')?.value;
+
+    const localStartDateStr = `${year}-${month}-${day}`;
+    const localStartDate = new Date(`${localStartDateStr}T00:00:00-03:00`);
     const dayOfWeek = localStartDate.getDay();
 
-    const year = localStartDate.getFullYear();
-    const month = String(localStartDate.getMonth() + 1).padStart(2, '0');
-    const day = String(localStartDate.getDate()).padStart(2, '0');
     const targetDateOnly = new Date(`${year}-${month}-${day}T00:00:00.000Z`);
 
     const court = await tx.court.findUnique({
@@ -703,16 +712,47 @@ export class BookingsService {
     const openTimeStr = schedule?.openTime || '06:00';
     const closeTimeStr = schedule?.closeTime || '23:00';
 
-    // openTime/closeTime são cadastrados em horário local de Brasília pelo
-    // dono da arena — precisam ser convertidos pra UTC antes de comparar
-    // com `start`/`end`, que já chegam em UTC real.
-    const scheduleOpen = brazilTimeToUtcDate(start, openTimeStr);
-    const scheduleClose = brazilTimeToUtcDate(start, closeTimeStr);
+    // Converte "HH:mm" do horário de Brasília diretamente para o instante UTC
+    const scheduleOpen = new Date(`${localStartDateStr}T${openTimeStr}:00-03:00`);
+    const scheduleClose = new Date(`${localStartDateStr}T${closeTimeStr}:00-03:00`);
 
-    if (start < scheduleOpen || end > scheduleClose) {
-      throw new BadRequestException(`Horário fora de funcionamento (${openTimeStr} às ${closeTimeStr}, horário de Brasília).`);
+    if (scheduleClose <= scheduleOpen) {
+      scheduleClose.setDate(scheduleClose.getDate() + 1);
     }
 
+    // ------------------- LOGS DE DIAGNÓSTICO -------------------
+    console.log('\n================ [ VALIDAÇÃO DE HORÁRIO ] ================');
+    console.log('📌 Recebido da requisição (UTC Raw):', {
+      startUTC: start.toISOString(),
+      endUTC: end.toISOString(),
+    });
+
+    console.log('🕒 Recebido convertido para Horário de Brasília (BRT):', {
+      inicioRequisitado: start.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
+      fimRequisitado: end.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
+    });
+
+    console.log('🏢 Horário de funcionamento cadastrado na Arena (BRT):', {
+      aberturaConfigurada: openTimeStr,
+      fechamentoConfigurado: closeTimeStr,
+      aberturaUTC: scheduleOpen.toISOString(),
+      fechamentoUTC: scheduleClose.toISOString(),
+    });
+
+    console.log('⚖️ Comparação final (Validação):', {
+      inicioEValido: start >= scheduleOpen,
+      fimEValido: end <= scheduleClose,
+    });
+    console.log('===========================================================\n');
+    // -----------------------------------------------------------
+
+    if (start < scheduleOpen || end > scheduleClose) {
+      throw new BadRequestException(
+        `Horário fora de funcionamento (${openTimeStr} às ${closeTimeStr}, horário de Brasília).`,
+      );
+    }
+
+    // Validação de conflito com outros agendamentos
     const conflictingBooking = await tx.booking.findFirst({
       where: {
         courtId: court.id,

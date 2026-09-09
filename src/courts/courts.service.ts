@@ -80,6 +80,16 @@ export class CourtsService {
         hourlyRate: dto.hourlyRate,
         isCovered: dto.isCovered ?? false,
         isActive: true,
+
+        surface: dto.surface,
+        surfaceNotes: dto.surfaceNotes,
+        netHeight: dto.netHeight,
+        lengthMeters: dto.lengthMeters,
+        widthMeters: dto.widthMeters,
+        hasLighting: dto.hasLighting,
+        isOfficialSize: dto.isOfficialSize,
+        observation: dto.observation,
+
         arenaId: targetArenaId,
         ...(photosToCreate.length > 0 && {
           photos: {
@@ -193,6 +203,14 @@ export class CourtsService {
       ...(dto.hourlyRate !== undefined && { hourlyRate: dto.hourlyRate }),
       ...(dto.isCovered !== undefined && { isCovered: dto.isCovered }),
       ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+      ...(dto.surface !== undefined && { surface: dto.surface }),
+      ...(dto.surfaceNotes !== undefined && { surfaceNotes: dto.surfaceNotes }),
+      ...(dto.netHeight !== undefined && { netHeight: dto.netHeight }),
+      ...(dto.lengthMeters !== undefined && { lengthMeters: dto.lengthMeters }),
+      ...(dto.widthMeters !== undefined && { widthMeters: dto.widthMeters }),
+      ...(dto.hasLighting !== undefined && { hasLighting: dto.hasLighting }),
+      ...(dto.isOfficialSize !== undefined && { isOfficialSize: dto.isOfficialSize }),
+      ...(dto.observation !== undefined && { observation: dto.observation }),
       ...(newPhotosData.length > 0 && {
         photos: {
           create: newPhotosData,

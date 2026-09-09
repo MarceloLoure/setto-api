@@ -40,4 +40,79 @@ export class CreateCourtDto {
   @IsOptional()
   @IsUUID('4')
   arenaId?: string;
+
+  // --- Especificações Físicas & Técnicas ---
+
+  @ApiPropertyOptional({
+    description: 'Tipo geral do piso ou superfície da quadra',
+    example: 'Areia',
+    default: 'Areia',
+  })
+  @IsOptional()
+  @IsString()
+  surface?: string;
+
+  @ApiPropertyOptional({
+    description: 'Detalhamento do material/areia da quadra',
+    example: 'Areia de Quartzo Lavada (Atermica)',
+  })
+  @IsOptional()
+  @IsString()
+  surfaceNotes?: string;
+
+  @ApiPropertyOptional({
+    description: 'Altura da rede em metros',
+    example: 1.7,
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsPositive()
+  @Min(0.5)
+  @Max(3.0)
+  netHeight?: number;
+
+  @ApiPropertyOptional({
+    description: 'Comprimento da quadra em metros',
+    example: 16.0,
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsPositive()
+  lengthMeters?: number;
+
+  @ApiPropertyOptional({
+    description: 'Largura da quadra em metros',
+    example: 8.0,
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsPositive()
+  widthMeters?: number;
+
+  @ApiPropertyOptional({
+    description: 'Possui iluminação para jogos noturnos',
+    default: true,
+    example: true,
+  })
+  @IsOptional()
+  @IsBoolean()
+  hasLighting?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Indica se possui dimensões oficiais do esporte',
+    default: true,
+    example: true,
+  })
+  @IsOptional()
+  @IsBoolean()
+  isOfficialSize?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Observações e orientações gerais sobre a quadra',
+    example:
+      'Rede ajustável para Beach Tennis e Vôlei de Praia. Quadra localizada ao lado do bar.',
+  })
+  @IsOptional()
+  @IsString()
+  observation?: string;
 }

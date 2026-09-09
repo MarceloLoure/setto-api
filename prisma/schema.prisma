@@ -29,6 +29,7 @@ enum Sport {
   BEACH_TENNIS
   FOOTVOLLEY
   BEACH_VOLLEYBALL
+  OTHER
 }
 
 enum BookingStatus {
@@ -268,6 +269,28 @@ model Court {
   hourlyRate Decimal @db.Decimal(10, 2)
   isCovered  Boolean @default(false)
   isActive   Boolean @default(true)
+
+  // --- Especificações Físicas & Técnicas ---
+  
+  // Tipo geral do piso (ex: "Areia", "Grama Sintética", "Cimento", "Saibro")
+  surface      String?  @default("Areia")
+  
+  // Detalhamento do material/areia (ex: "Areia de Quartzo Lavada", "Areia Fina Tipo Praia")
+  surfaceNotes String?  
+  
+  // Altura da rede em metros (ex: 1.70, 2.20, 2.43)
+  netHeight    Decimal? @db.Decimal(3, 2)
+  
+  // Dimensões da quadra em metros
+  lengthMeters Decimal? @db.Decimal(4, 2) // ex: 16.00
+  widthMeters  Decimal? @db.Decimal(4, 2) // ex: 8.00
+  
+  // Recursos adicionais
+  hasLighting    Boolean? @default(true)   // Iluminação noturna
+  isOfficialSize Boolean? @default(true) // Medidas oficiais do esporte
+
+  // Observações adicionais / orientações gerais para o atleta
+  observation  String?  @db.Text
 
   photos File[] @relation("CourtGallery")
 
