@@ -9,6 +9,7 @@ import {
 import { Prisma, Role, BookingStatus, Sport } from '@prisma/client';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
+import { SubscriptionStatus } from '@prisma/client';
 import { FirebaseStorageService } from '../storage/storage.service';
 import { CreateSubAccountDto } from './dto/create-arena-request.dto';
 import { FindArenaFollowersQueryDto } from './dto/find-arena-followers-query.dto';
@@ -1395,5 +1396,80 @@ export class ArenasService {
     }
 
     return { rangeStart, rangeEnd };
+  }
+
+  async getSubscriptionDetails(arenaId: string, user: any) {
+    await this.validateArenaOwner(arenaId, user);
+
+    // 1. Busca a assinatura no banco local
+    const subscription = await this.prisma.arenaSubscription.findFirst({
+      where: {
+        arenaId,
+        status: { in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.PENDING, SubscriptionStatus.CANCELLED, SubscriptionStatus.EXPIRED] },
+      },
+    });
+
+    if (!subscription) {
+      return { message: 'Nenhuma assinatura ativa encontrada para esta arena.' };
+    }
+
+    // 2. Se tiver o ID do Asaas, busca os detalhes atualizados no gateway
+    let asaasDetails = null;
+    if (subscription.asaasSubscriptionId) {
+      asaasDetails = await this.asaasService.getSubscription(subscription.asaasSubscriptionId);
+    }
+
+    return {
+      localSubscription: subscription,
+      asaasSubscription: asaasDetails,
+    };
+  }
+
+  /**
+   * Cancela a renovação automática no Asaas e atualiza o status local para CANCELLED.
+   */
+  async cancelSubscription(arenaId: string, user: any) {
+    await this.validateArenaOwner(arenaId, user);
+
+    const subscription = await this.prisma.arenaSubscription.findFirst({
+      where: {
+        arenaId,
+        status: SubscriptionStatus.ACTIVE,
+      },
+    });
+
+    if (!subscription) {
+      throw new BadRequestException('Não há nenhuma assinatura ativa para ser cancelada nesta arena.');
+    }
+
+    // 1. Envia comando de exclusão delegando para o AsaasService
+    if (subscription.asaasSubscriptionId) {
+      await this.asaasService.cancelSubscription(subscription.asaasSubscriptionId);
+    }
+
+    // 2. Marca a assinatura como CANCELLED no banco local
+    // Observação: O acesso continuará válido até a data contida em currentCycleEnd
+    return await this.prisma.arenaSubscription.update({
+      where: { id: subscription.id },
+      data: {
+        status: SubscriptionStatus.CANCELLED,
+        cancelledAt: new Date(),
+      },
+    });
+  }
+
+  private async validateArenaOwner(arenaId: string, user: any) {
+    if (user.role === 'SUPERADMIN') return;
+
+    const arena = await this.prisma.arena.findFirst({
+      where: {
+        id: arenaId,
+        admins: { some: { id: user.id } },
+      },
+    });
+
+    if (!arena) {
+      throw new ForbiddenException('Acesso negado: Você não gerencia esta arena.');
+    }
   }
 }

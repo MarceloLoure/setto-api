@@ -34,9 +34,9 @@ export class PublicCheckoutService {
           name: dto.arenaName,
           email: dto.email,
           isActive: false,
-          city: dto.city,
-          state: dto.state,
-          zipCode: dto.zipCode,
+          city: dto.city!,
+          state: dto.state!,
+          zipCode: dto.zipCode!,
           phone: dto.phone,
         },
       });
@@ -81,7 +81,6 @@ export class PublicCheckoutService {
       },
     });
 
-    // 4. Montar o payload da assinatura no Asaas
     const todayStr = new Date().toISOString().split('T')[0];
     const subPayload: any = {
       customer: asaasCustomerId,
@@ -93,26 +92,40 @@ export class PublicCheckoutService {
       externalReference: `arena_sub:${subscription.id}`,
     };
 
-    // Se for cartão de crédito, injeta os dados do cartão no payload
+    // Se for cartão de crédito, trata tokenização/cartão salvo vs. cartão novo
     if (dto.billingType === 'CREDIT_CARD') {
-      if (!dto.creditCard) {
-        throw new BadRequestException('Dados do cartão de crédito são obrigatórios para este método.');
+      if (dto.cardId) {
+        // Busca o token do cartão no banco local
+        const savedCard = await this.prisma.creditCard.findUnique({
+          where: { id: dto.cardId },
+        });
+
+        if (!savedCard) {
+          throw new BadRequestException('Cartão de crédito informado não foi encontrado.');
+        }
+        subPayload.creditCardToken = savedCard.asaasToken;
+      } else if (dto.creditCardToken) {
+        subPayload.creditCardToken = dto.creditCardToken;
+      } else if (dto.creditCard) {
+        // Injeta dados do cartão novo digitado
+        subPayload.creditCard = {
+          holderName: dto.creditCard.holderName,
+          number: dto.creditCard.number,
+          expiryMonth: dto.creditCard.expiryMonth,
+          expiryYear: dto.creditCard.expiryYear,
+          ccv: dto.creditCard.ccv,
+        };
+        subPayload.creditCardHolderInfo = {
+          name: dto.creditCardHolderInfo?.name || dto.creditCard.holderName,
+          email: dto.email,
+          cpfCnpj: dto.cpfCnpj,
+          postalCode: dto.creditCardHolderInfo?.postalCode || dto.zipCode || '00000000',
+          addressNumber: dto.creditCardHolderInfo?.addressNumber || 'S/N',
+          phone: dto.phone,
+        };
+      } else {
+        throw new BadRequestException('Dados do cartão, cardId ou creditCardToken são obrigatórios.');
       }
-      subPayload.creditCard = {
-        holderName: dto.creditCard.holderName,
-        number: dto.creditCard.number,
-        expiryMonth: dto.creditCard.expiryMonth,
-        expiryYear: dto.creditCard.expiryYear,
-        ccv: dto.creditCard.ccv,
-      };
-      subPayload.creditCardHolderInfo = {
-        name: dto.creditCardHolderInfo?.name || dto.creditCard.holderName,
-        email: dto.email,
-        cpfCnpj: dto.cpfCnpj,
-        postalCode: dto.creditCardHolderInfo?.postalCode || dto.zipCode || '00000000',
-        addressNumber: dto.creditCardHolderInfo?.addressNumber || 'S/N',
-        phone: dto.phone,
-      };
     }
 
     // 5. Criar Assinatura no Asaas

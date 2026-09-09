@@ -1,4 +1,4 @@
-import { Body, Controller, Param, Post, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Param, Post, Put, UseGuards, Get, Delete } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -15,6 +15,24 @@ import { UpdateOperatingHoursDto } from '../arenas/dto/update-operating-hours.dt
 @Controller('manager/arena')
 export class ManagerArenaController {
   constructor(private readonly arenasService: ArenasService) {}
+
+  @Get(':id/subscription')
+  @ApiOperation({ summary: 'Consultar status e data de expiração da assinatura da arena' })
+  getSubscription(
+    @Param('id') arenaId: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.arenasService.getSubscriptionDetails(arenaId, user);
+  }
+
+  @Delete(':id/subscription')
+  @ApiOperation({ summary: 'Cancelar assinatura recorrente da arena no Asaas' })
+  cancelSubscription(
+    @Param('id') arenaId: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.arenasService.cancelSubscription(arenaId, user);
+  }
 
   @Put(':id/operating-hours')
   @ApiOperation({ summary: 'Configurar horários de abertura e fechamento por dia da semana' })

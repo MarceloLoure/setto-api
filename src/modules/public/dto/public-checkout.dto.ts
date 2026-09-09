@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsEnum, IsNotEmpty, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsOptional, IsString, IsUUID, ValidateIf, ValidateNested } from 'class-validator';
 
 export enum CheckoutBillingType {
   PIX = 'PIX',
@@ -75,36 +75,48 @@ export class PublicCheckoutDto {
   @ApiPropertyOptional({ example: '43999999999' })
   @IsOptional()
   @IsString()
-  phone: string;
+  phone?: string;
 
   @ApiPropertyOptional({ example: 'Maringá' })
   @IsOptional()
   @IsString()
-  city: string;
+  city?: string;
 
   @ApiPropertyOptional({ example: 'PR' })
   @IsOptional()
   @IsString()
-  state: string;
+  state?: string;
 
   @ApiPropertyOptional({ example: '87000000' })
   @IsOptional()
   @IsString()
-  zipCode: string;
+  zipCode?: string;
 
   @ApiProperty({ enum: CheckoutBillingType, example: CheckoutBillingType.PIX })
   @IsNotEmpty()
   @IsEnum(CheckoutBillingType)
   billingType: CheckoutBillingType;
 
-  @ApiPropertyOptional({ type: () => CreditCardDto })
+  @ApiPropertyOptional({ description: 'ID do cartão salvo na tabela CreditCard (se houver)' })
   @IsOptional()
+  @IsUUID('4', { message: 'cardId deve ser um UUID v4 válido' })
+  cardId?: string;
+
+  @ApiPropertyOptional({ description: 'Token do cartão de crédito no Asaas' })
+  @IsOptional()
+  @IsString()
+  creditCardToken?: string;
+
+  @ApiPropertyOptional({ type: () => CreditCardDto })
+  @ValidateIf((o) => o.billingType === CheckoutBillingType.CREDIT_CARD && !o.creditCardToken && !o.cardId)
+  @IsNotEmpty({ message: 'creditCard é obrigatório quando não informado cartão salvo ou token' })
   @ValidateNested()
   @Type(() => CreditCardDto)
   creditCard?: CreditCardDto;
 
   @ApiPropertyOptional({ type: () => CreditCardHolderInfoDto })
-  @IsOptional()
+  @ValidateIf((o) => o.billingType === CheckoutBillingType.CREDIT_CARD && !o.creditCardToken && !o.cardId)
+  @IsNotEmpty({ message: 'creditCardHolderInfo é obrigatório quando envia cartão novo' })
   @ValidateNested()
   @Type(() => CreditCardHolderInfoDto)
   creditCardHolderInfo?: CreditCardHolderInfoDto;

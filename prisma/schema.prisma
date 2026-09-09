@@ -180,6 +180,8 @@ model User {
 
   memberships AthleteMembership[]
 
+  creditCards CreditCard[]
+
   @@map("users")
 }
 
@@ -290,8 +292,8 @@ model Booking {
   customerName String? // Nome caso criado no balcão sem cadastro
   coachId      String? // Professor responsável (se for aula)
 
-  startTime DateTime
-  endTime   DateTime
+  startTime DateTime @db.Timestamptz
+  endTime   DateTime @db.Timestamptz
 
   totalAmount    Decimal  @db.Decimal(10, 2)
   pricePerPlayer Decimal? @db.Decimal(10, 2) // Preço individual se for GROUP_LESSON
@@ -306,8 +308,8 @@ model Booking {
   tournamentName String?
   notes          String?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
 
   expiresAt DateTime?
 
@@ -538,7 +540,7 @@ model ArenaSubscription {
   arenaId             String
   platformPlanId      String // <-- Ajuste o nome do campo para bater com a relação abaixo
   asaasSubscriptionId String?   @unique // sub_xxxxxx (opcional para aceitar nulo)
-  status              String    @default("ACTIVE")
+  status              SubscriptionStatus @default(ACTIVE)
   currentCycleStart   DateTime? @default(now())
   currentCycleEnd     DateTime?
   cancelledAt         DateTime?
@@ -604,4 +606,23 @@ model ArenaRegistrationToken {
   @@index([email])
   @@index([planId])
   @@map("arena_registration_tokens")
+}
+
+model CreditCard {
+  id               String   @id @default(uuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  asaasToken       String   @unique // Token retornado pelo Asaas (ex: creditCardToken)
+  brand            String   // Bandeira: VISA, MASTERCARD, etc.
+  lastFourDigits   String   // Últimos 4 dígitos para exibição no App
+  holderName       String   // Nome impresso no cartão
+  expiryMonth      String   // MM
+  expiryYear       String   // YYYY
+
+  isDefault        Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([userId])
 }

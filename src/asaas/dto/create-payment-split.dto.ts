@@ -2,6 +2,8 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
+  IsEmail,
   IsIn,
   IsNotEmpty,
   IsNumber,
@@ -13,6 +15,64 @@ import {
 } from 'class-validator';
 
 export type AsaasBillingType = 'PIX' | 'CREDIT_CARD' | 'BOLETO' | 'UNDEFINED';
+
+export class CreditCardHolderInfoDto {
+  @ApiProperty({ example: 'João da Silva' })
+  @IsString()
+  @IsNotEmpty()
+  name: string;
+
+  @ApiProperty({ example: 'joao@email.com' })
+  @IsEmail()
+  email: string;
+
+  @ApiProperty({ example: '12345678909' })
+  @IsString()
+  @IsNotEmpty()
+  cpfCnpj: string;
+
+  @ApiProperty({ example: '01310100' })
+  @IsString()
+  @IsNotEmpty()
+  postalCode: string;
+
+  @ApiProperty({ example: '1000' })
+  @IsString()
+  @IsNotEmpty()
+  addressNumber: string;
+
+  @ApiPropertyOptional({ example: '11999999999' })
+  @IsString()
+  @IsOptional()
+  phone?: string;
+}
+
+export class CreditCardDetailsDto {
+  @ApiProperty({ example: 'JOAO SILVA' })
+  @IsString()
+  @IsNotEmpty()
+  holderName: string;
+
+  @ApiProperty({ example: '4444567890123456' })
+  @IsString()
+  @IsNotEmpty()
+  number: string;
+
+  @ApiProperty({ example: '12' })
+  @IsString()
+  @IsNotEmpty()
+  expiryMonth: string;
+
+  @ApiProperty({ example: '2028' })
+  @IsString()
+  @IsNotEmpty()
+  expiryYear: string;
+
+  @ApiProperty({ example: '123' })
+  @IsString()
+  @IsNotEmpty()
+  ccv: string;
+}
 
 export class AsaasSplitConfig {
   @ApiProperty({ example: 'wal_master_xxxxxx', description: 'Carteira Asaas que recebe esta parte do split' })
@@ -70,13 +130,28 @@ export class CreatePaymentSplitDto {
   @Type(() => AsaasSplitConfig)
   split: AsaasSplitConfig[];
 
-  @ApiPropertyOptional()
-  @IsObject()
+  @ApiPropertyOptional({
+    example: 'tok_000005113305',
+    description: 'Token de cartão de crédito pré-cadastrado no Asaas',
+  })
+  @IsString()
   @IsOptional()
-  creditCard?: Record<string, unknown>;
+  creditCardToken?: string;
 
-  @ApiPropertyOptional()
-  @IsObject()
+  @ApiPropertyOptional({ type: CreditCardDetailsDto })
   @IsOptional()
-  creditCardHolderInfo?: Record<string, unknown>;
+  @ValidateNested()
+  @Type(() => CreditCardDetailsDto)
+  creditCard?: CreditCardDetailsDto;
+
+  @ApiPropertyOptional({ type: CreditCardHolderInfoDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CreditCardHolderInfoDto)
+  creditCardHolderInfo?: CreditCardHolderInfoDto;
+
+  @ApiPropertyOptional({ description: 'Indica se deve tokenizar o cartão no Asaas para compras futuras' })
+  @IsBoolean()
+  @IsOptional()
+  saveCard?: boolean;
 }

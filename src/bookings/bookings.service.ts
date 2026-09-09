@@ -3,7 +3,8 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
-  ForbiddenException
+  ForbiddenException,
+  InternalServerErrorException
 } from '@nestjs/common';
 import { BookingType, ParticipantStatus, Prisma, PaymentCategory, PaymentMethod, PaymentStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -23,193 +24,435 @@ export class BookingsService {
     private asaasService: AsaasService,
   ) {}
 
-  
   // -------------------------------------------------------------
   // 1. FLUXO DO APP MOBILE (Atleta - Sem trava de impersonação)
   // -------------------------------------------------------------
   async createAppBooking(user: any, dto: CreateAppBookingDto) {
-    const start = parseAppMobileTimestamp(dto.startTime);
-    const end = parseAppMobileTimestamp(dto.endTime);
-    const now = new Date();
+  const start = parseAppMobileTimestamp(dto.startTime);
+  const end = parseAppMobileTimestamp(dto.endTime);
+  const now = new Date();
 
-    // 1. OBRIGATÓRIO: Valida se as datas enviadas são válidas e futuras
-    this.validateTimeWindow(start, end, now);
+  // 1. Valida janela de horário
+  this.validateTimeWindow(start, end, now);
 
-    // 2. Define a expiração para exatamente 30 minutos a partir de agora
-    const expiresAt = new Date(now.getTime() + 30 * 60 * 1000);
+  const expiresAt = new Date(now.getTime() + 30 * 60 * 1000);
 
-    // 3. Transação rápida de banco: valida vaga e cria a reserva com status PENDING + TTL
-    let newBooking: any;
-    let court: any;
+  // 2. Valida CPF e carrega cartões cadastrados
+  const fullUser = await this.prisma.user.findUnique({
+    where: { id: user.id },
+    include: { creditCards: true },
+  });
+
+  if (!fullUser?.cpf) {
+    throw new BadRequestException(
+      'Você precisa cadastrar seu CPF no perfil para realizar o pagamento de reservas.',
+    );
+  }
+
+  // 3. Sincroniza Customer no Asaas
+  let asaasCustomerId = fullUser.asaasCustomerId;
+  const customerData = {
+    name: fullUser.name,
+    email: fullUser.email,
+    cpfCnpj: fullUser.cpf,
+    phone: fullUser.phone || undefined,
+    externalReference: fullUser.id,
+  };
+
+  if (!asaasCustomerId) {
+    let existingCustomer: any = null;
 
     try {
-      ({ newBooking, court } = await this.prisma.$transaction(
-        async (tx) => {
-          const court = await this.fetchAndValidateCourtAvailability(tx, dto.courtId, start, end);
-
-          // Calcula a duração exata em minutos e converte para horas
-          const durationInMinutes = Math.round((end.getTime() - start.getTime()) / (1000 * 60));
-          const durationInHours = durationInMinutes / 60;
-
-          const hourlyRate = Number(court.hourlyRate);
-          const calculatedTotal = Number((durationInHours * hourlyRate).toFixed(2));
-
-          const newBooking = await tx.booking.create({
-            data: {
-              type: BookingType.FREE_PLAY,
-              courtId: court.id,
-              arenaId: court.arenaId,
-              userId: user.id,
-              startTime: start,
-              endTime: end,
-              totalAmount: calculatedTotal,
-              status: BookingStatus.PENDING,
-              expiresAt: expiresAt,
-            },
-            include: {
-              arena: true,
-              court: { select: { id: true, name: true, sport: true } },
-            },
-          });
-
-          return { newBooking, court };
-        },
-        {
-          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-          maxWait: 5_000,
-          timeout: 10_000,
-        },
-      ));
-    } catch (error) {
-      this.handlePrismaConflictError(error);
+      const searchByCpf = await this.asaasService.findCustomerByCpfCnpj(fullUser.cpf);
+      if (searchByCpf?.data?.length > 0) {
+        existingCustomer = searchByCpf.data[0];
+      } else if (fullUser.email) {
+        const searchByEmail = await this.asaasService.findCustomerByEmail(fullUser.email);
+        if (searchByEmail?.data?.length > 0) {
+          existingCustomer = searchByEmail.data[0];
+        }
+      }
+    } catch (err) {
+      // Ignora erro de busca
     }
 
-    // 4. Valida CPF no perfil
-    const fullUser = await this.prisma.user.findUnique({ where: { id: user.id } });
-
-    if (!fullUser?.cpf) {
-      await this.prisma.booking.delete({ where: { id: newBooking.id } }).catch(() => {});
-      throw new BadRequestException(
-        'Você precisa cadastrar seu CPF no perfil para realizar o pagamento de reservas.',
-      );
+    if (existingCustomer) {
+      asaasCustomerId = existingCustomer.id;
+      if (asaasCustomerId) {
+        await this.asaasService.updateCustomer(asaasCustomerId, customerData).catch(() => {});
+      }
+    } else {
+      const customer = await this.asaasService.createCustomer(customerData);
+      asaasCustomerId = customer.id;
     }
 
-    // 5. Garante e Sincroniza Customer Asaas do Usuário
-    let arenaWalletId = newBooking.arena.asaasWalletId;
-    let asaasCustomerId = fullUser.asaasCustomerId;
+    await this.prisma.user.update({
+      where: { id: fullUser.id },
+      data: { asaasCustomerId },
+    });
+  } else {
+    await this.asaasService.updateCustomer(asaasCustomerId, customerData).catch(() => {});
+  }
 
-    const customerData = {
-      name: fullUser.name,
-      email: fullUser.email,
-      cpfCnpj: fullUser.cpf,
-      phone: fullUser.phone || undefined,
-      externalReference: fullUser.id,
-    };
+  // 4. Executa criação dentro do bloco isolado de transação
+  try {
+    return await this.prisma.$transaction(
+      async (tx) => {
+        // A) Valida disponibilidade da quadra
+        const court = await this.fetchAndValidateCourtAvailability(tx, dto.courtId, start, end);
 
-    if (!asaasCustomerId) {
-      let existingCustomer: any = null;
+        const durationInMinutes = Math.round((end.getTime() - start.getTime()) / (1000 * 60));
+        const durationInHours = durationInMinutes / 60;
+        const hourlyRate = Number(court.hourlyRate);
+        const calculatedTotal = Number((durationInHours * hourlyRate).toFixed(2));
 
-      try {
-        const searchByCpf = await this.asaasService.findCustomerByCpfCnpj(fullUser.cpf);
-        if (searchByCpf?.data?.length > 0) {
-          existingCustomer = searchByCpf.data[0];
-        } else if (fullUser.email) {
-          const searchByEmail = await this.asaasService.findCustomerByEmail(fullUser.email);
-          if (searchByEmail?.data?.length > 0) {
-            existingCustomer = searchByEmail.data[0];
+        // B) Cria a reserva
+        const newBooking = await tx.booking.create({
+          data: {
+            type: BookingType.FREE_PLAY,
+            courtId: court.id,
+            arenaId: court.arenaId,
+            userId: user.id,
+            startTime: start,
+            endTime: end,
+            totalAmount: calculatedTotal,
+            status: BookingStatus.PENDING,
+            expiresAt: expiresAt,
+          },
+          include: {
+            arena: true,
+            court: { select: { id: true, name: true, sport: true } },
+          },
+        });
+
+        // C) Calcula splits
+        const platformFeePercent = Number(newBooking.arena.platformFeePercent ?? 5);
+        const arenaSharePercent = Number((100 - platformFeePercent).toFixed(2));
+        const arenaWalletId = newBooking.arena.asaasWalletId!;
+        const dueDate = new Date().toISOString().slice(0, 10);
+
+        // D) Cria o registro de Payment local
+        const localPayment = await tx.payment.create({
+          data: {
+            description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
+            amount: newBooking.totalAmount,
+            method: dto.billingType === 'PIX' ? PaymentMethod.PIX : PaymentMethod.CREDIT_CARD,
+            category: PaymentCategory.BOOKING,
+            status: PaymentStatus.PENDING,
+            arenaId: newBooking.arenaId,
+            bookingId: newBooking.id,
+            userId: newBooking.userId,
+            createdById: user.id,
+            expiresAt: expiresAt,
+          },
+        });
+
+        // E) Prepara o Payload do Asaas
+        const paymentPayload: any = {
+          customer: asaasCustomerId!,
+          billingType: dto.billingType,
+          value: Number(newBooking.totalAmount),
+          dueDate,
+          description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
+          externalReference: `booking:${newBooking.id}`,
+          split: [{ walletId: arenaWalletId, percentualValue: arenaSharePercent }],
+        };
+
+        if (dto.billingType === 'CREDIT_CARD') {
+          // Caso 1: Usando cartão salvo prévio (via cardId ou creditCardToken)
+          if (dto.cardId) {
+            const savedCard = fullUser.creditCards.find((c) => c.id === dto.cardId);
+            if (!savedCard) {
+              throw new BadRequestException('Cartão de crédito informado não encontrado.');
+            }
+            paymentPayload.creditCardToken = savedCard.asaasToken;
+          } else if (dto.creditCardToken) {
+            paymentPayload.creditCardToken = dto.creditCardToken;
+          } else {
+            // Caso 2: Digitando novo cartão
+            paymentPayload.creditCard = dto.creditCard;
+            paymentPayload.creditCardHolderInfo = dto.creditCardHolderInfo;
           }
         }
-      } catch (err) {
-        // Ignora erro de busca e avança para criação
-      }
 
-      if (existingCustomer) {
-        asaasCustomerId = existingCustomer.id;
-        if (asaasCustomerId) {
-          await this.asaasService.updateCustomer(asaasCustomerId, customerData).catch(() => {});
-        }
-      } else {
-        const customer = await this.asaasService.createCustomer(customerData);
-        asaasCustomerId = customer.id;
-      }
+        // F) Cria o pagamento no Asaas
+        const asaasPayment = await this.asaasService.createSplitPayment(paymentPayload);
 
-      await this.prisma.user.update({
-        where: { id: fullUser.id },
-        data: { asaasCustomerId },
-      });
-    } else {
-      await this.asaasService.updateCustomer(asaasCustomerId, customerData).catch(() => {});
-    }
-
-    // 6. Calcula splits (Plataforma vs Arena)
-    const platformFeePercent = Number(newBooking.arena.platformFeePercent ?? 5);
-    const arenaSharePercent = Number((100 - platformFeePercent).toFixed(2));
-    const dueDate = new Date().toISOString().slice(0, 10);
-
-    let localPayment: any = null;
-
-    try {
-      // 7. Cria registro de Payment local
-      localPayment = await this.prisma.payment.create({
-        data: {
-          description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
-          amount: newBooking.totalAmount,
-          method: dto.billingType === 'PIX' ? PaymentMethod.PIX : PaymentMethod.CREDIT_CARD,
-          category: PaymentCategory.BOOKING,
-          status: PaymentStatus.PENDING,
-          arenaId: newBooking.arenaId,
-          bookingId: newBooking.id,
-          userId: newBooking.userId,
-          createdById: user.id,
-          expiresAt: expiresAt
-        },
-      });
-
-      // 8. Emite cobrança no Asaas
-      const asaasPayment = await this.asaasService.createSplitPayment({
-        customer: asaasCustomerId!,
-        billingType: dto.billingType,
-        value: Number(newBooking.totalAmount),
-        dueDate,
-        description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
-        externalReference: `booking:${newBooking.id}`,
-        split: [{ walletId: arenaWalletId, percentualValue: arenaSharePercent }],
-      });
-
-      let pixCopiaECola: string | undefined = undefined;
-
-      // 9. Retorna detalhes do pagamento e atualiza a chave PIX se for o caso
-      let paymentDetails: any = { asaasPaymentId: asaasPayment.id, billingType: dto.billingType };
-      if (dto.billingType === 'PIX') {
-        const qrCode = await this.asaasService.getPixQrCode(asaasPayment.id);
-        pixCopiaECola = qrCode.payload;
-        paymentDetails.pix = qrCode;
-      } else {
-        paymentDetails.invoiceUrl = asaasPayment.invoiceUrl;
-      }
-
-      await this.prisma.payment.update({
-        where: { id: localPayment.id },
-        data: { 
+        let pixCopiaECola: string | undefined = undefined;
+        let paymentDetails: any = {
           asaasPaymentId: asaasPayment.id,
-          pixCopiaECola: pixCopiaECola,
-        },
-      });
+          billingType: dto.billingType,
+          status: asaasPayment.status,
+        };
 
-      return {
-        booking: newBooking,
-        payment: paymentDetails,
-        expiresAt: expiresAt.toISOString(),
-      };
-    } catch (error) {
-      // Rollback limpo: se o payment foi criado, deleta ele antes de deletar a booking
-      if (localPayment?.id) {
-        await this.prisma.payment.delete({ where: { id: localPayment.id } }).catch(() => {});
-      }
-      await this.prisma.booking.delete({ where: { id: newBooking.id } }).catch(() => {});
+        // G) Trata a resposta conforme o tipo de pagamento
+        let finalBookingStatus: BookingStatus = BookingStatus.PENDING;
+        let finalPaymentStatus: PaymentStatus = PaymentStatus.PENDING;
+
+        if (dto.billingType === 'PIX') {
+          const qrCode = await this.asaasService.getPixQrCode(asaasPayment.id);
+          pixCopiaECola = qrCode.payload;
+          paymentDetails.pix = qrCode;
+        } else if (dto.billingType === 'CREDIT_CARD') {
+          const token = asaasPayment.creditCard?.creditCardToken;
+          paymentDetails.creditCardToken = token;
+
+          // Se solicitou salvar o novo cartão e o Asaas devolveu o token
+          if (dto.saveCard && token && !dto.cardId && !dto.creditCardToken) {
+            const existingCount = fullUser.creditCards.length;
+
+            await tx.creditCard.create({
+              data: {
+                userId: user.id,
+                asaasToken: token,
+                brand: asaasPayment.creditCard?.creditCardBrand || 'UNKNOWN',
+                lastFourDigits:
+                  asaasPayment.creditCard?.creditCardNumber || dto.creditCard?.number.slice(-4) || '0000',
+                holderName: dto.creditCardHolderInfo?.name || fullUser.name,
+                expiryMonth: dto.creditCard?.expiryMonth || '',
+                expiryYear: dto.creditCard?.expiryYear || '',
+                isDefault: existingCount === 0,
+              },
+            });
+          }
+
+          // Se a cobrança no cartão foi capturada e aprovada imediatamente
+          if (asaasPayment.status === 'CONFIRMED' || asaasPayment.status === 'RECEIVED') {
+            finalPaymentStatus = PaymentStatus.COMPLETED;
+            finalBookingStatus = BookingStatus.CONFIRMED;
+          }
+        }
+
+        // H) Atualiza o Payment e a Reserva no banco
+        await tx.payment.update({
+          where: { id: localPayment.id },
+          data: {
+            asaasPaymentId: asaasPayment.id,
+            pixCopiaECola: pixCopiaECola,
+            status: finalPaymentStatus,
+            ...(finalPaymentStatus === PaymentStatus.COMPLETED ? { paidAt: new Date() } : {}),
+          },
+        });
+
+        if (finalBookingStatus === BookingStatus.CONFIRMED) {
+          await tx.booking.update({
+            where: { id: newBooking.id },
+            data: { status: BookingStatus.CONFIRMED },
+          });
+          newBooking.status = BookingStatus.CONFIRMED;
+        }
+
+        return {
+          booking: newBooking,
+          payment: paymentDetails,
+          expiresAt: expiresAt.toISOString(),
+        };
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        maxWait: 5_000,
+        timeout: 15_000,
+      },
+    );
+  } catch (error) {
+    this.handlePrismaConflictError(error);
+
+    if (error instanceof BadRequestException || error instanceof InternalServerErrorException) {
       throw error;
     }
+
+    console.error('Erro na criação de agendamento/cobrança:', error);
+    throw new BadRequestException(
+      'Não foi possível processar o agendamento devido a uma falha no sistema de pagamento. Tente novamente.',
+    );
   }
+}
+  // // -------------------------------------------------------------
+  // // 1. FLUXO DO APP MOBILE (Atleta - Sem trava de impersonação)
+  // // -------------------------------------------------------------
+  // async createAppBooking(user: any, dto: CreateAppBookingDto) {
+  //   const start = parseAppMobileTimestamp(dto.startTime);
+  //   const end = parseAppMobileTimestamp(dto.endTime);
+  //   const now = new Date();
+
+  //   // 1. OBRIGATÓRIO: Valida se as datas enviadas são válidas e futuras
+  //   this.validateTimeWindow(start, end, now);
+
+  //   // 2. Define a expiração para exatamente 30 minutos a partir de agora
+  //   const expiresAt = new Date(now.getTime() + 30 * 60 * 1000);
+
+  //   // 3. Transação rápida de banco: valida vaga e cria a reserva com status PENDING + TTL
+  //   let newBooking: any;
+  //   let court: any;
+
+  //   try {
+  //     ({ newBooking, court } = await this.prisma.$transaction(
+  //       async (tx) => {
+  //         const court = await this.fetchAndValidateCourtAvailability(tx, dto.courtId, start, end);
+
+  //         // Calcula a duração exata em minutos e converte para horas
+  //         const durationInMinutes = Math.round((end.getTime() - start.getTime()) / (1000 * 60));
+  //         const durationInHours = durationInMinutes / 60;
+
+  //         const hourlyRate = Number(court.hourlyRate);
+  //         const calculatedTotal = Number((durationInHours * hourlyRate).toFixed(2));
+
+  //         const newBooking = await tx.booking.create({
+  //           data: {
+  //             type: BookingType.FREE_PLAY,
+  //             courtId: court.id,
+  //             arenaId: court.arenaId,
+  //             userId: user.id,
+  //             startTime: start,
+  //             endTime: end,
+  //             totalAmount: calculatedTotal,
+  //             status: BookingStatus.PENDING,
+  //             expiresAt: expiresAt,
+  //           },
+  //           include: {
+  //             arena: true,
+  //             court: { select: { id: true, name: true, sport: true } },
+  //           },
+  //         });
+
+  //         return { newBooking, court };
+  //       },
+  //       {
+  //         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+  //         maxWait: 5_000,
+  //         timeout: 10_000,
+  //       },
+  //     ));
+  //   } catch (error) {
+  //     this.handlePrismaConflictError(error);
+  //   }
+
+  //   // 4. Valida CPF no perfil
+  //   const fullUser = await this.prisma.user.findUnique({ where: { id: user.id } });
+
+  //   if (!fullUser?.cpf) {
+  //     await this.prisma.booking.delete({ where: { id: newBooking.id } }).catch(() => {});
+  //     throw new BadRequestException(
+  //       'Você precisa cadastrar seu CPF no perfil para realizar o pagamento de reservas.',
+  //     );
+  //   }
+
+  //   // 5. Garante e Sincroniza Customer Asaas do Usuário
+  //   let arenaWalletId = newBooking.arena.asaasWalletId;
+  //   let asaasCustomerId = fullUser.asaasCustomerId;
+
+  //   const customerData = {
+  //     name: fullUser.name,
+  //     email: fullUser.email,
+  //     cpfCnpj: fullUser.cpf,
+  //     phone: fullUser.phone || undefined,
+  //     externalReference: fullUser.id,
+  //   };
+
+  //   if (!asaasCustomerId) {
+  //     let existingCustomer: any = null;
+
+  //     try {
+  //       const searchByCpf = await this.asaasService.findCustomerByCpfCnpj(fullUser.cpf);
+  //       if (searchByCpf?.data?.length > 0) {
+  //         existingCustomer = searchByCpf.data[0];
+  //       } else if (fullUser.email) {
+  //         const searchByEmail = await this.asaasService.findCustomerByEmail(fullUser.email);
+  //         if (searchByEmail?.data?.length > 0) {
+  //           existingCustomer = searchByEmail.data[0];
+  //         }
+  //       }
+  //     } catch (err) {
+  //       // Ignora erro de busca e avança para criação
+  //     }
+
+  //     if (existingCustomer) {
+  //       asaasCustomerId = existingCustomer.id;
+  //       if (asaasCustomerId) {
+  //         await this.asaasService.updateCustomer(asaasCustomerId, customerData).catch(() => {});
+  //       }
+  //     } else {
+  //       const customer = await this.asaasService.createCustomer(customerData);
+  //       asaasCustomerId = customer.id;
+  //     }
+
+  //     await this.prisma.user.update({
+  //       where: { id: fullUser.id },
+  //       data: { asaasCustomerId },
+  //     });
+  //   } else {
+  //     await this.asaasService.updateCustomer(asaasCustomerId, customerData).catch(() => {});
+  //   }
+
+  //   // 6. Calcula splits (Plataforma vs Arena)
+  //   const platformFeePercent = Number(newBooking.arena.platformFeePercent ?? 5);
+  //   const arenaSharePercent = Number((100 - platformFeePercent).toFixed(2));
+  //   const dueDate = new Date().toISOString().slice(0, 10);
+
+  //   let localPayment: any = null;
+
+  //   try {
+  //     // 7. Cria registro de Payment local
+  //     localPayment = await this.prisma.payment.create({
+  //       data: {
+  //         description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
+  //         amount: newBooking.totalAmount,
+  //         method: dto.billingType === 'PIX' ? PaymentMethod.PIX : PaymentMethod.CREDIT_CARD,
+  //         category: PaymentCategory.BOOKING,
+  //         status: PaymentStatus.PENDING,
+  //         arenaId: newBooking.arenaId,
+  //         bookingId: newBooking.id,
+  //         userId: newBooking.userId,
+  //         createdById: user.id,
+  //         expiresAt: expiresAt
+  //       },
+  //     });
+
+  //     // 8. Emite cobrança no Asaas
+  //     const asaasPayment = await this.asaasService.createSplitPayment({
+  //       customer: asaasCustomerId!,
+  //       billingType: dto.billingType,
+  //       value: Number(newBooking.totalAmount),
+  //       dueDate,
+  //       description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
+  //       externalReference: `booking:${newBooking.id}`,
+  //       split: [{ walletId: arenaWalletId, percentualValue: arenaSharePercent }],
+  //     });
+
+  //     let pixCopiaECola: string | undefined = undefined;
+
+  //     // 9. Retorna detalhes do pagamento e atualiza a chave PIX se for o caso
+  //     let paymentDetails: any = { asaasPaymentId: asaasPayment.id, billingType: dto.billingType };
+  //     if (dto.billingType === 'PIX') {
+  //       const qrCode = await this.asaasService.getPixQrCode(asaasPayment.id);
+  //       pixCopiaECola = qrCode.payload;
+  //       paymentDetails.pix = qrCode;
+  //     } else {
+  //       paymentDetails.invoiceUrl = asaasPayment.invoiceUrl;
+  //     }
+
+  //     await this.prisma.payment.update({
+  //       where: { id: localPayment.id },
+  //       data: { 
+  //         asaasPaymentId: asaasPayment.id,
+  //         pixCopiaECola: pixCopiaECola,
+  //       },
+  //     });
+
+  //     return {
+  //       booking: newBooking,
+  //       payment: paymentDetails,
+  //       expiresAt: expiresAt.toISOString(),
+  //     };
+  //   } catch (error) {
+  //     // Rollback limpo: se o payment foi criado, deleta ele antes de deletar a booking
+  //     if (localPayment?.id) {
+  //       await this.prisma.payment.delete({ where: { id: localPayment.id } }).catch(() => {});
+  //     }
+  //     await this.prisma.booking.delete({ where: { id: newBooking.id } }).catch(() => {});
+  //     throw error;
+  //   }
+  // }
 
   // -------------------------------------------------------------
   // 1.1 CHECKOUT ONLINE (Pix/Cartão com split) — Vertical 1
@@ -400,18 +643,15 @@ export class BookingsService {
   // MÉTODOS AUXILIARES DE SUPORTE
   // -------------------------------------------------------------
   private validateTimeWindow(start: Date, end: Date, now: Date) {
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-      throw new BadRequestException('Formato de data inválido.');
+    // 1. O horário de início deve ser anterior ao de término
+    if (start.getTime() >= end.getTime()) {
+      throw new BadRequestException('O horário final deve ser maior que o horário inicial.');
     }
-    if (start >= end) {
-      throw new BadRequestException('O horário de início deve ser anterior ao de término.');
-    }
-    if (start < now) {
-      throw new BadRequestException('Não é possível criar agendamentos no passado.');
-    }
-    const durationInHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-    if (durationInHours < 0.5) {
-      throw new BadRequestException('O tempo mínimo de agendamento é de 30 minutos.');
+
+    // 2. Compara o instante UTC diretamente em milissegundos (tolerância de 1 minuto)
+    const marginInMs = 60 * 1000;
+    if (start.getTime() < now.getTime() - marginInMs) {
+      throw new BadRequestException('Não é possível agendar em um horário no passado.');
     }
   }
 

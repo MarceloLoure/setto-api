@@ -1,3 +1,5 @@
+import { BadRequestException } from '@nestjs/common';
+
 /**
  * O Brasil (horário de Brasília, BRT) é UTC-3 o ano inteiro desde a extinção
  * do horário de verão em 2019 — por isso um offset fixo aqui é seguro.
@@ -52,16 +54,23 @@ export function utcDateToBrazilTimeLabel(date: Date): string {
  * esta função lá deslocaria as reservas do painel em +3h, criando um bug novo.
  */
 export function parseAppMobileTimestamp(raw: string): Date {
-  const naive = new Date(raw); // lê os dígitos "de cara", ignorando o que o 'Z' afirma
+  const date = new Date(raw);
+  
+  if (isNaN(date.getTime())) {
+    throw new BadRequestException('Formato de data/hora inválido.');
+  }
+
+  // Extrai os componentes de hora tal como vieram na string (ignorando o Z)
+  // e adiciona +3 horas para converter BRT -> UTC
   return new Date(
     Date.UTC(
-      naive.getUTCFullYear(),
-      naive.getUTCMonth(),
-      naive.getUTCDate(),
-      naive.getUTCHours() + BRAZIL_UTC_OFFSET_HOURS,
-      naive.getUTCMinutes(),
-      naive.getUTCSeconds(),
-      naive.getUTCMilliseconds(),
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate(),
+      date.getUTCHours() + BRAZIL_UTC_OFFSET_HOURS,
+      date.getUTCMinutes(),
+      date.getUTCSeconds(),
+      date.getUTCMilliseconds(),
     ),
   );
 }

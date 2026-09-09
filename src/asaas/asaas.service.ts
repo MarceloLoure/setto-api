@@ -96,11 +96,29 @@ export class AsaasService {
     }
   }
 
+  /**
+   * Busca os detalhes de uma assinatura específica no Asaas pelo ID (ex: sub_xxx).
+   */
+  async getSubscription(subscriptionId: string) {
+    try {
+      const { data } = await this.http.get(`/subscriptions/${subscriptionId}`);
+      return data;
+    } catch (error) {
+      this.handleError('getSubscription', error);
+    }
+  }
+
   async cancelSubscription(subscriptionId: string) {
     try {
       const { data } = await this.http.delete(`/subscriptions/${subscriptionId}`);
       return data;
     } catch (error) {
+      // Se for 404 (já deletado no Asaas), tratamos graciosamente
+      const err = error as AxiosError<any>;
+      if (err.response?.status === 404) {
+        this.logger.warn(`Assinatura ${subscriptionId} não foi encontrada no Asaas ao tentar cancelar.`);
+        return { deleted: true, message: 'Assinatura já cancelada no gateway.' };
+      }
       this.handleError('cancelSubscription', error);
     }
   }
@@ -145,6 +163,39 @@ export class AsaasService {
       return data;
     } catch (error) {
       this.handleError('cancelPayment', error);
+    }
+  }
+
+  async tokenizeCreditCard(payload: {
+    customer: string;
+    creditCard: {
+      holderName: string;
+      number: string;
+      expiryMonth: string;
+      expiryYear: string;
+      ccv: string;
+    };
+    creditCardHolderInfo: {
+      name: string;
+      email: string;
+      cpfCnpj: string;
+      postalCode: string;
+      addressNumber: string;
+      phone: string;
+      mobilePhone?: string;
+    };
+  }) {
+    try {
+      const { data } = await this.http.post('/creditCard/tokenize', payload);
+      
+      // O Asaas retorna: creditCardToken, creditCardBrand, creditCardNumber (últimos 4 dígitos)
+      return data as {
+        creditCardToken: string;
+        creditCardBrand: string;
+        creditCardNumber: string;
+      };
+    } catch (error) {
+      this.handleError('tokenizeCreditCard', error);
     }
   }
 }
