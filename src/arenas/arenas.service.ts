@@ -9,7 +9,7 @@ import {
 import { Prisma, Role, BookingStatus, Sport } from '@prisma/client';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
-import { SubscriptionStatus } from '@prisma/client';
+import { SubscriptionStatus, PaymentStatus } from '@prisma/client';
 import { FirebaseStorageService } from '../storage/storage.service';
 import { CreateSubAccountDto } from './dto/create-arena-request.dto';
 import { FindArenaFollowersQueryDto } from './dto/find-arena-followers-query.dto';
@@ -20,6 +20,8 @@ import { UpdateOperatingHoursDto } from './dto/update-operating-hours.dto';
 import { DashboardSummaryQueryDto } from './dto/dashboard-summary-query.dto';
 import { AsaasService } from '../asaas/asaas.service';
 import { brazilTimeToUtcDate, utcDateToBrazilTimeLabel } from '../common/utils/timezone.util';
+import { FinancialFilterDto } from './dto/financial-filter.dto';
+import { WithdrawRequestDto } from './dto/withdraw-request.dto';
 
 @Injectable()
 export class ArenasService {
@@ -1471,5 +1473,92 @@ export class ArenasService {
     if (!arena) {
       throw new ForbiddenException('Acesso negado: Você não gerencia esta arena.');
     }
+  }
+
+  async getFinancialSummary(arenaId: string, user: any, filter: FinancialFilterDto) {
+    await this.validateArenaManagementPermission(arenaId, user);
+
+    const whereClause: Prisma.PaymentWhereInput = { arenaId };
+
+    if (filter.startDate || filter.endDate) {
+      whereClause.createdAt = {};
+      if (filter.startDate) whereClause.createdAt.gte = new Date(`${filter.startDate}T00:00:00-03:00`);
+      if (filter.endDate) whereClause.createdAt.lte = new Date(`${filter.endDate}T23:59:59.999-03:00`);
+    }
+
+    const [received, pending, cancelled, refunded] = await Promise.all([
+      this.prisma.payment.aggregate({
+        _sum: { amount: true },
+        _count: { id: true },
+        where: { ...whereClause, status: PaymentStatus.COMPLETED },
+      }),
+      this.prisma.payment.aggregate({
+        _sum: { amount: true },
+        _count: { id: true },
+        where: { ...whereClause, status: PaymentStatus.PENDING },
+      }),
+      this.prisma.payment.aggregate({
+        _sum: { amount: true },
+        _count: { id: true },
+        where: { ...whereClause, status: PaymentStatus.CANCELLED },
+      }),
+      this.prisma.payment.aggregate({
+        _sum: { amount: true },
+        _count: { id: true },
+        where: { ...whereClause, status: PaymentStatus.REFUNDED },
+      }),
+    ]);
+
+    // Consulta o saldo disponível na conta Split/Asaas associada à Arena (se aplicável)
+    const arena = await this.prisma.arena.findUnique({ where: { id: arenaId }, select: { asaasAccountId: true } });
+    let asaasBalance: Awaited<ReturnType<typeof this.asaasService.getAccountBalance>> | null = null;
+
+    if (arena?.asaasAccountId) {
+      asaasBalance = await this.asaasService.getAccountBalance(arena.asaasAccountId);
+    }
+
+    return {
+      summary: {
+        received: { total: received._sum.amount || 0, count: received._count.id },
+        pending: { total: pending._sum.amount || 0, count: pending._count.id },
+        cancelled: { total: cancelled._sum.amount || 0, count: cancelled._count.id },
+        refunded: { total: refunded._sum.amount || 0, count: refunded._count.id },
+      },
+      asaasBalance,
+    };
+  }
+
+  async getFinancialTransactions(arenaId: string, user: any, filter: FinancialFilterDto) {
+    await this.validateArenaManagementPermission(arenaId, user);
+
+    const whereClause: Prisma.PaymentWhereInput = { arenaId };
+
+    if (filter.status) whereClause.status = filter.status;
+    if (filter.startDate || filter.endDate) {
+      whereClause.createdAt = {};
+      if (filter.startDate) whereClause.createdAt.gte = new Date(`${filter.startDate}T00:00:00-03:00`);
+      if (filter.endDate) whereClause.createdAt.lte = new Date(`${filter.endDate}T23:59:59.999-03:00`);
+    }
+
+    return this.prisma.payment.findMany({
+      where: whereClause,
+      include: {
+        user: { select: { id: true, name: true, email: true, phone: true } },
+        booking: { select: { id: true, startTime: true, endTime: true, court: { select: { name: true } } } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async requestWithdrawal(arenaId: string, user: any, dto: WithdrawRequestDto) {
+    await this.validateArenaManagementPermission(arenaId, user);
+
+    const arena = await this.prisma.arena.findUnique({ where: { id: arenaId } });
+    if (!arena?.asaasAccountId) {
+      throw new BadRequestException('Esta arena não possui uma conta de recebimento vinculada ao Asaas.');
+    }
+
+    // Repassa a chave Pix enviada no DTO (se houver) para o AsaasService
+    return this.asaasService.transferFunds(arena.asaasAccountId, dto.value, dto.pixAddressKey);
   }
 }

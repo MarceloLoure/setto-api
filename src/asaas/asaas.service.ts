@@ -198,4 +198,68 @@ export class AsaasService {
       this.handleError('tokenizeCreditCard', error);
     }
   }
+
+  /**
+   * Consulta o saldo disponível e a receber de uma subconta (arena) no Asaas.
+   */
+  async getAccountBalance(asaasAccountId: string) {
+    try {
+      // Quando for subconta, passamos a API Key do Asaas do master
+      // e informamos o ID da subconta no header ou acessamos pela chave da subconta.
+      // A API v3 do Asaas permite ler saldo via GET /finance/balance
+      const { data } = await this.http.get('/finance/balance', {
+        headers: {
+          // Caso utilize chaves individuais por subconta ou o recurso de 'impersonation':
+          'asaas-account-id': asaasAccountId,
+        },
+      });
+
+      return data as {
+        balance: number; // Saldo disponível para saque
+        totalBalance: number; // Saldo total
+        retainedBalance?: number;
+      };
+    } catch (error) {
+      this.handleError('getAccountBalance', error);
+    }
+  }
+
+  /**
+   * Realiza a solicitação de transferência / saque de valores acumulados na subconta da arena
+   * para a chave Pix cadastrada ou conta bancária vinculada.
+   */
+  async transferFunds(
+    asaasAccountId: string,
+    value: number,
+    pixKey?: string,
+  ) {
+    try {
+      const payload: Record<string, any> = {
+        value,
+      };
+
+      if (pixKey) {
+        payload.pixAddressKey = pixKey;
+        payload.scheduleDate = null;
+      }
+
+      const { data } = await this.http.post('/transfers', payload, {
+        headers: {
+          'asaas-account-id': asaasAccountId,
+        },
+      });
+
+      return data as {
+        id: string;
+        dateCreated: string;
+        status: string;
+        effectiveDate: string;
+        value: number;
+        netValue: number;
+        transferFee: number;
+      };
+    } catch (error) {
+      this.handleError('transferFunds', error);
+    }
+  }
 }

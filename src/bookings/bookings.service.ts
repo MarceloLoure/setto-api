@@ -795,6 +795,7 @@ export class BookingsService {
               name: true,
               operatingHours: true,
               holidays: true,
+              platformFeePercent: true,
               courts: {
                 select: {
                   id: true,

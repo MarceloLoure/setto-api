@@ -214,6 +214,10 @@ export class CreateSubAccountDto {
   @IsNotEmpty({ message: 'O Estado é obrigatório.' })
   state?: string;
 
+  @IsOptional()
+  @IsString()
+  pixAddressKey?: string;
+
   @ApiPropertyOptional({
     description: 'Configuração dos Webhooks para a subconta no Asaas BaaS',
     type: [WebhookConfigDto],
