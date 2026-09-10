@@ -45,7 +45,9 @@ export class AsaasWebhookDto {
 
   @IsOptional()
   subscription?: any;
+  
 
   @IsOptional()
-@IsObject()
-additionalInfo?: Record<string, any>;
+  @IsObject()
+  additionalInfo?: Record<string, any>;
+}
