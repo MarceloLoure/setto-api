@@ -732,6 +732,7 @@ export class BookingsService {
 
     // 2. Consulta de ocupação pública para o App
   async getAthleteCourtAvailability(filter: BookingFilterDto) {
+    // 1. Cláusula de busca para as reservas ativas
     const whereClause: Prisma.BookingWhereInput = {
       status: {
         in: [BookingStatus.CONFIRMED, BookingStatus.RESERVED_LOCAL, BookingStatus.PENDING],
@@ -744,7 +745,6 @@ export class BookingsService {
       whereClause.arenaId = filter.arenaId;
     }
 
-    // Filtro por dia específico (brt -03:00)
     if (filter.date) {
       const startOfDay = new Date(`${filter.date}T00:00:00-03:00`);
       const endOfDay = new Date(`${filter.date}T23:59:59.999-03:00`);
@@ -755,18 +755,63 @@ export class BookingsService {
       ];
     }
 
-    // Retorna apenas dados essenciais para calcular slots vagos, ocultando dados sensíveis de terceiros
-    return this.prisma.booking.findMany({
-      where: whereClause,
-      select: {
-        id: true,
-        courtId: true,
-        startTime: true,
-        endTime: true,
-        status: true,
-      },
-      orderBy: { startTime: 'asc' },
-    });
+    // 2. Busca paralela: reservas ocupadas + dados de funcionamento da arena/quadra
+    const [existingBookings, courtOrArenaData] = await Promise.all([
+      this.prisma.booking.findMany({
+        where: whereClause,
+        select: {
+          id: true,
+          courtId: true,
+          startTime: true,
+          endTime: true,
+          status: true,
+        },
+        orderBy: { startTime: 'asc' },
+      }),
+
+      // Traz os horários de funcionamento (openingHours) da Arena e da Quadra
+      filter.courtId
+        ? this.prisma.court.findUnique({
+            where: { id: filter.courtId },
+            select: {
+              id: true,
+              name: true,
+              hourlyRate: true,
+              arena: {
+                select: {
+                  id: true,
+                  name: true,
+                  holidays: true,
+                  operatingHours: true,
+                },
+              },
+            },
+          })
+        : filter.arenaId
+        ? this.prisma.arena.findUnique({
+            where: { id: filter.arenaId },
+            select: {
+              id: true,
+              name: true,
+              operatingHours: true,
+              holidays: true,
+              courts: {
+                select: {
+                  id: true,
+                  name: true,
+                  hourlyRate: true,
+                  isActive: true,
+                },
+              },
+            },
+          })
+        : null,
+    ]);
+
+    return {
+      operatingRules: courtOrArenaData,
+      occupiedSlots: existingBookings,
+    };
   }
 
 

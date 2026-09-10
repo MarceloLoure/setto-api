@@ -113,6 +113,8 @@ export class AsaasWebhookService {
         });
 
         await tx.booking.update({ where: { id: booking.id }, data: { status: BookingStatus.CONFIRMED } });
+
+        this.logger.log(`[Asaas] Pagamento CONFIRMADO para a reserva #${booking.id} (Pagamento Asaas ID: ${payment.id}, Valor: R$ ${payment.value}).`);
       });
     }
 
