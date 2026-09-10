@@ -17,6 +17,32 @@ import { CreateBookingCheckoutDto } from './dto/create-booking-checkout.dto';
 import { AsaasService } from '../asaas/asaas.service';
 import { brazilTimeToUtcDate, parseAppMobileTimestamp } from '../common/utils/timezone.util';
 
+const MAX_FIXED_FEE = 5.0;
+
+function calculateServiceFee(
+  hourlyRate: number, 
+  durationInHours: number, 
+  platformFeePercentFromDb: number
+): {
+  courtBasePrice: number;
+  serviceFee: number;
+  totalPrice: number;
+} {
+  const courtBasePrice = Number((durationInHours * hourlyRate).toFixed(2));
+
+  // 1. Calcula a taxa para UMA hora de quadra
+  const feePercentForOneHour = hourlyRate * (platformFeePercentFromDb / 100);
+  const feePerFeeHour = Math.min(feePercentForOneHour, MAX_FIXED_FEE);
+
+  // 2. Multiplica a taxa pelo número de horas/duração
+  const serviceFee = Number((feePerFeeHour * durationInHours).toFixed(2));
+
+  // 3. Valor total repassado ao cliente
+  const totalPrice = Number((courtBasePrice + serviceFee).toFixed(2));
+
+  return { courtBasePrice, serviceFee, totalPrice };
+}
+
 @Injectable()
 export class BookingsService {
   constructor(
@@ -104,7 +130,14 @@ export class BookingsService {
         const durationInMinutes = Math.round((end.getTime() - start.getTime()) / (1000 * 60));
         const durationInHours = durationInMinutes / 60;
         const hourlyRate = Number(court.hourlyRate);
-        const calculatedTotal = Number((durationInHours * hourlyRate).toFixed(2));
+
+        // B) Calcula a taxa de serviço (teto de R$ 5,00 ou % cadastrada) e valor total
+        const platformFeePercent = Number(court.arena.platformFeePercent ?? 5);
+        const { courtBasePrice, serviceFee, totalPrice } = calculateServiceFee(
+          hourlyRate,
+          durationInHours,
+          platformFeePercent,
+        );
 
         // B) Cria a reserva
         const newBooking = await tx.booking.create({
@@ -115,7 +148,7 @@ export class BookingsService {
             userId: user.id,
             startTime: start,
             endTime: end,
-            totalAmount: calculatedTotal,
+            totalAmount: totalPrice,
             status: BookingStatus.PENDING,
             expiresAt: expiresAt,
           },
@@ -126,8 +159,6 @@ export class BookingsService {
         });
 
         // C) Calcula splits
-        const platformFeePercent = Number(newBooking.arena.platformFeePercent ?? 5);
-        const arenaSharePercent = Number((100 - platformFeePercent).toFixed(2));
         const arenaWalletId = newBooking.arena.asaasWalletId!;
         const dueDate = new Date().toISOString().slice(0, 10);
 
@@ -135,7 +166,7 @@ export class BookingsService {
         const localPayment = await tx.payment.create({
           data: {
             description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
-            amount: newBooking.totalAmount,
+            amount: totalPrice,
             method: dto.billingType === 'PIX' ? PaymentMethod.PIX : PaymentMethod.CREDIT_CARD,
             category: PaymentCategory.BOOKING,
             status: PaymentStatus.PENDING,
@@ -151,11 +182,16 @@ export class BookingsService {
         const paymentPayload: any = {
           customer: asaasCustomerId!,
           billingType: dto.billingType,
-          value: Number(newBooking.totalAmount),
+          value: totalPrice,
           dueDate,
           description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
           externalReference: `booking:${newBooking.id}`,
-          split: [{ walletId: arenaWalletId, percentualValue: arenaSharePercent }],
+          split: [
+              { 
+                walletId: arenaWalletId, 
+                fixedValue: courtBasePrice
+              }
+            ],
         };
 
         if (dto.billingType === 'CREDIT_CARD') {
@@ -183,6 +219,9 @@ export class BookingsService {
           asaasPaymentId: asaasPayment.id,
           billingType: dto.billingType,
           status: asaasPayment.status,
+          courtBasePrice,
+          serviceFee,
+          totalPrice,
         };
 
         // G) Trata a resposta conforme o tipo de pagamento
@@ -267,192 +306,7 @@ export class BookingsService {
     );
   }
 }
-  // // -------------------------------------------------------------
-  // // 1. FLUXO DO APP MOBILE (Atleta - Sem trava de impersonação)
-  // // -------------------------------------------------------------
-  // async createAppBooking(user: any, dto: CreateAppBookingDto) {
-  //   const start = parseAppMobileTimestamp(dto.startTime);
-  //   const end = parseAppMobileTimestamp(dto.endTime);
-  //   const now = new Date();
 
-  //   // 1. OBRIGATÓRIO: Valida se as datas enviadas são válidas e futuras
-  //   this.validateTimeWindow(start, end, now);
-
-  //   // 2. Define a expiração para exatamente 30 minutos a partir de agora
-  //   const expiresAt = new Date(now.getTime() + 30 * 60 * 1000);
-
-  //   // 3. Transação rápida de banco: valida vaga e cria a reserva com status PENDING + TTL
-  //   let newBooking: any;
-  //   let court: any;
-
-  //   try {
-  //     ({ newBooking, court } = await this.prisma.$transaction(
-  //       async (tx) => {
-  //         const court = await this.fetchAndValidateCourtAvailability(tx, dto.courtId, start, end);
-
-  //         // Calcula a duração exata em minutos e converte para horas
-  //         const durationInMinutes = Math.round((end.getTime() - start.getTime()) / (1000 * 60));
-  //         const durationInHours = durationInMinutes / 60;
-
-  //         const hourlyRate = Number(court.hourlyRate);
-  //         const calculatedTotal = Number((durationInHours * hourlyRate).toFixed(2));
-
-  //         const newBooking = await tx.booking.create({
-  //           data: {
-  //             type: BookingType.FREE_PLAY,
-  //             courtId: court.id,
-  //             arenaId: court.arenaId,
-  //             userId: user.id,
-  //             startTime: start,
-  //             endTime: end,
-  //             totalAmount: calculatedTotal,
-  //             status: BookingStatus.PENDING,
-  //             expiresAt: expiresAt,
-  //           },
-  //           include: {
-  //             arena: true,
-  //             court: { select: { id: true, name: true, sport: true } },
-  //           },
-  //         });
-
-  //         return { newBooking, court };
-  //       },
-  //       {
-  //         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-  //         maxWait: 5_000,
-  //         timeout: 10_000,
-  //       },
-  //     ));
-  //   } catch (error) {
-  //     this.handlePrismaConflictError(error);
-  //   }
-
-  //   // 4. Valida CPF no perfil
-  //   const fullUser = await this.prisma.user.findUnique({ where: { id: user.id } });
-
-  //   if (!fullUser?.cpf) {
-  //     await this.prisma.booking.delete({ where: { id: newBooking.id } }).catch(() => {});
-  //     throw new BadRequestException(
-  //       'Você precisa cadastrar seu CPF no perfil para realizar o pagamento de reservas.',
-  //     );
-  //   }
-
-  //   // 5. Garante e Sincroniza Customer Asaas do Usuário
-  //   let arenaWalletId = newBooking.arena.asaasWalletId;
-  //   let asaasCustomerId = fullUser.asaasCustomerId;
-
-  //   const customerData = {
-  //     name: fullUser.name,
-  //     email: fullUser.email,
-  //     cpfCnpj: fullUser.cpf,
-  //     phone: fullUser.phone || undefined,
-  //     externalReference: fullUser.id,
-  //   };
-
-  //   if (!asaasCustomerId) {
-  //     let existingCustomer: any = null;
-
-  //     try {
-  //       const searchByCpf = await this.asaasService.findCustomerByCpfCnpj(fullUser.cpf);
-  //       if (searchByCpf?.data?.length > 0) {
-  //         existingCustomer = searchByCpf.data[0];
-  //       } else if (fullUser.email) {
-  //         const searchByEmail = await this.asaasService.findCustomerByEmail(fullUser.email);
-  //         if (searchByEmail?.data?.length > 0) {
-  //           existingCustomer = searchByEmail.data[0];
-  //         }
-  //       }
-  //     } catch (err) {
-  //       // Ignora erro de busca e avança para criação
-  //     }
-
-  //     if (existingCustomer) {
-  //       asaasCustomerId = existingCustomer.id;
-  //       if (asaasCustomerId) {
-  //         await this.asaasService.updateCustomer(asaasCustomerId, customerData).catch(() => {});
-  //       }
-  //     } else {
-  //       const customer = await this.asaasService.createCustomer(customerData);
-  //       asaasCustomerId = customer.id;
-  //     }
-
-  //     await this.prisma.user.update({
-  //       where: { id: fullUser.id },
-  //       data: { asaasCustomerId },
-  //     });
-  //   } else {
-  //     await this.asaasService.updateCustomer(asaasCustomerId, customerData).catch(() => {});
-  //   }
-
-  //   // 6. Calcula splits (Plataforma vs Arena)
-  //   const platformFeePercent = Number(newBooking.arena.platformFeePercent ?? 5);
-  //   const arenaSharePercent = Number((100 - platformFeePercent).toFixed(2));
-  //   const dueDate = new Date().toISOString().slice(0, 10);
-
-  //   let localPayment: any = null;
-
-  //   try {
-  //     // 7. Cria registro de Payment local
-  //     localPayment = await this.prisma.payment.create({
-  //       data: {
-  //         description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
-  //         amount: newBooking.totalAmount,
-  //         method: dto.billingType === 'PIX' ? PaymentMethod.PIX : PaymentMethod.CREDIT_CARD,
-  //         category: PaymentCategory.BOOKING,
-  //         status: PaymentStatus.PENDING,
-  //         arenaId: newBooking.arenaId,
-  //         bookingId: newBooking.id,
-  //         userId: newBooking.userId,
-  //         createdById: user.id,
-  //         expiresAt: expiresAt
-  //       },
-  //     });
-
-  //     // 8. Emite cobrança no Asaas
-  //     const asaasPayment = await this.asaasService.createSplitPayment({
-  //       customer: asaasCustomerId!,
-  //       billingType: dto.billingType,
-  //       value: Number(newBooking.totalAmount),
-  //       dueDate,
-  //       description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
-  //       externalReference: `booking:${newBooking.id}`,
-  //       split: [{ walletId: arenaWalletId, percentualValue: arenaSharePercent }],
-  //     });
-
-  //     let pixCopiaECola: string | undefined = undefined;
-
-  //     // 9. Retorna detalhes do pagamento e atualiza a chave PIX se for o caso
-  //     let paymentDetails: any = { asaasPaymentId: asaasPayment.id, billingType: dto.billingType };
-  //     if (dto.billingType === 'PIX') {
-  //       const qrCode = await this.asaasService.getPixQrCode(asaasPayment.id);
-  //       pixCopiaECola = qrCode.payload;
-  //       paymentDetails.pix = qrCode;
-  //     } else {
-  //       paymentDetails.invoiceUrl = asaasPayment.invoiceUrl;
-  //     }
-
-  //     await this.prisma.payment.update({
-  //       where: { id: localPayment.id },
-  //       data: { 
-  //         asaasPaymentId: asaasPayment.id,
-  //         pixCopiaECola: pixCopiaECola,
-  //       },
-  //     });
-
-  //     return {
-  //       booking: newBooking,
-  //       payment: paymentDetails,
-  //       expiresAt: expiresAt.toISOString(),
-  //     };
-  //   } catch (error) {
-  //     // Rollback limpo: se o payment foi criado, deleta ele antes de deletar a booking
-  //     if (localPayment?.id) {
-  //       await this.prisma.payment.delete({ where: { id: localPayment.id } }).catch(() => {});
-  //     }
-  //     await this.prisma.booking.delete({ where: { id: newBooking.id } }).catch(() => {});
-  //     throw error;
-  //   }
-  // }
 
   // -------------------------------------------------------------
   // 1.1 CHECKOUT ONLINE (Pix/Cartão com split) — Vertical 1
@@ -829,18 +683,93 @@ export class BookingsService {
         whereClause.courtId = filter.courtId;
     }
 
-    const data = await this.prisma.booking.findMany({
-        where: whereClause,
-        include: {
-        user: { select: { id: true, name: true, email: true, phone: true } },
-        court: { select: { id: true, name: true, sport: true } },
-        arena: { select: { id: true, name: true } },
-        },
-        orderBy: { startTime: 'asc' },
-    });
+    if (filter.date) {
+      const startOfDay = new Date(`${filter.date}T00:00:00-03:00`);
+      const endOfDay = new Date(`${filter.date}T23:59:59.999-03:00`);
 
-    return data;
+      whereClause.AND = [
+        { startTime: { lt: endOfDay } },
+        { endTime: { gt: startOfDay } },
+      ];
     }
+
+    return this.prisma.booking.findMany({
+      where: whereClause,
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+          },
+        },
+        court: {
+          select: {
+            id: true,
+            name: true,
+            sport: true,
+          },
+        },
+        arena: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        payment: {
+          select: {
+            id: true,
+            amount: true,
+            status: true,
+            method: true,
+          },
+        },
+      },
+      orderBy: { startTime: 'asc' },
+    });
+  }
+
+    // 2. Consulta de ocupação pública para o App
+  async getAthleteCourtAvailability(filter: BookingFilterDto) {
+    const whereClause: Prisma.BookingWhereInput = {
+      status: {
+        in: [BookingStatus.CONFIRMED, BookingStatus.RESERVED_LOCAL, BookingStatus.PENDING],
+      },
+    };
+
+    if (filter.courtId) {
+      whereClause.courtId = filter.courtId;
+    } else if (filter.arenaId) {
+      whereClause.arenaId = filter.arenaId;
+    }
+
+    // Filtro por dia específico (brt -03:00)
+    if (filter.date) {
+      const startOfDay = new Date(`${filter.date}T00:00:00-03:00`);
+      const endOfDay = new Date(`${filter.date}T23:59:59.999-03:00`);
+
+      whereClause.AND = [
+        { startTime: { lt: endOfDay } },
+        { endTime: { gt: startOfDay } },
+      ];
+    }
+
+    // Retorna apenas dados essenciais para calcular slots vagos, ocultando dados sensíveis de terceiros
+    return this.prisma.booking.findMany({
+      where: whereClause,
+      select: {
+        id: true,
+        courtId: true,
+        startTime: true,
+        endTime: true,
+        status: true,
+      },
+      orderBy: { startTime: 'asc' },
+    });
+  }
+
+
 
   async cancel(bookingId: string, user: any) {
     const booking = await this.prisma.booking.findUnique({

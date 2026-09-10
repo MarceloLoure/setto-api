@@ -60,6 +60,12 @@ export class BookingsController {
     return this.bookingsService.findAll(user, filter);
   }
 
+  @Get('availability')
+  @ApiOperation({ summary: 'Consultar horários ocupados de uma quadra/arena para montar a grade de horários vagos' })
+  getAvailability(@Query() filter: BookingFilterDto) {
+    return this.bookingsService.getAthleteCourtAvailability(filter);
+  }
+
   @Patch(':id/cancel')
   @ApiOperation({ summary: 'Cancelar agendamento' })
   cancel(@Param('id') bookingId: string, @CurrentUser() user: any) {
