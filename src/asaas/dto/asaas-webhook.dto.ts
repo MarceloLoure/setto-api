@@ -1,8 +1,15 @@
 import {
   IsNotEmpty,
   IsString,
-  IsOptional
+  IsOptional,
+  IsObject
 } from 'class-validator';
+
+class AdditionalInfoDto {
+  @IsOptional()
+  @IsString()
+  splitId?: string;
+}
 
 export type AsaasWebhookEvent =
   | 'PAYMENT_CREATED'
@@ -38,4 +45,7 @@ export class AsaasWebhookDto {
 
   @IsOptional()
   subscription?: any;
-}
+
+  @IsOptional()
+@IsObject()
+additionalInfo?: Record<string, any>;
