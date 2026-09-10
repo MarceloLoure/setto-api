@@ -20,6 +20,7 @@ import { AsaasModule } from './asaas/asaas.module';
 import { PaymentsModule } from './payments/payments.module';
 import { PublicModule } from './modules/public/public.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { CardsModule } from './cards/cards.module';
 
 @Module({
   imports: [
@@ -45,7 +46,7 @@ import { ScheduleModule } from '@nestjs/schedule';
         limit: 100,  // Máximo 100 requisições por minuto por IP
       },
     ]),
-    PrismaModule, AuthModule, HomeModule, UsersModule, ArenasModule, CourtsModule, BookingsModule, SuperAdminModule, StaffModule, PaymentsModule, AsaasModule, PublicModule],
+    PrismaModule, AuthModule, HomeModule, UsersModule, ArenasModule, CourtsModule, BookingsModule, SuperAdminModule, StaffModule, PaymentsModule, AsaasModule, PublicModule, CardsModule],
   controllers: [AppController],
   providers: [
     {
