@@ -34,6 +34,11 @@ export class FirebaseStorageService implements OnModuleInit {
     folder: StorageFolder | string,
     ownerId: string,
   ): Promise<UploadedFileResult> {
+
+    if (!file || !file.buffer) {
+      throw new Error('Arquivo não fornecido ou buffer inválido.');
+    }
+
     this.logger.log(`📥 [Firebase Storage] Upload | Pasta: [${folder}] | Owner: ${ownerId}`);
     this.logger.log(`📄 Arquivo: "${file?.originalname}" | Mime: "${file?.mimetype}" | Tamanho: ${file?.size} bytes`);
 
@@ -43,9 +48,14 @@ export class FirebaseStorageService implements OnModuleInit {
     const bucket = getStorage().bucket(bucketName);
 
     const token = uuidv4();
-    const fileExt = file.originalname.split('.').pop() || 'png';
+
+    const mimeExt = file.mimetype ? file.mimetype.split('/')[1] : null;
+    const originalExt = file.originalname && file.originalname.includes('.')
+      ? file.originalname.split('.').pop()?.toLowerCase()
+      : null;
+
+    const fileExt = originalExt || mimeExt || 'jpg';
     const uniqueFileName = `${uuidv4()}.${fileExt}`;
-    // Organiza por subdiretório: ex: arenas/logos/{ownerId}/{uniqueFileName}
     const destinationPath = `${folder}/${ownerId}/${uniqueFileName}`;
     const blob = bucket.file(destinationPath);
 
@@ -53,8 +63,9 @@ export class FirebaseStorageService implements OnModuleInit {
 
     return new Promise((resolve, reject) => {
       const blobStream = blob.createWriteStream({
+        resumable: false,
         metadata: {
-          contentType: file.mimetype,
+          contentType: file.mimetype || 'image/jpeg',
           metadata: {
             firebaseStorageDownloadTokens: token,
           },
@@ -67,6 +78,7 @@ export class FirebaseStorageService implements OnModuleInit {
       });
 
       blobStream.on('finish', () => {
+        this.logger.log(`✅ [Firebase Storage] Upload concluído!`);
         const publicUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(
           destinationPath,
         )}?alt=media&token=${token}`;
