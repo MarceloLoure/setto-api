@@ -16,6 +16,7 @@ export const multerImageFilter = (
   // Checa se o MIME type começa com "image/" (cobre jpeg, png, webp, heic, heif, avif, gif, etc.)
   const isImageMime = file.mimetype && file.mimetype.startsWith('image/');
   
+  
   // Extrai a extensão do arquivo e converte para lowercase
   const extension = file.originalname?.split('.').pop()?.toLowerCase();
   const allowedExtensions = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'avif', 'bmp'];
