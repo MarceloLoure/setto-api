@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsEnum, IsNotEmpty, IsOptional, IsString, IsUUID, ValidateIf, ValidateNested } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsOptional, IsString, IsUUID, Matches, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 
 export enum CheckoutBillingType {
   PIX = 'PIX',
@@ -62,6 +62,33 @@ export class PublicCheckoutDto {
   @IsString()
   arenaName: string;
 
+  @ApiProperty({ example: 'João da Silva' })
+  @IsNotEmpty()
+  @IsString()
+  name: string;
+
+  @ApiProperty({ example: 'minha-senha-secreta' })
+  @IsNotEmpty()
+  @IsString()
+  @MinLength(6, { message: 'A senha deve ter pelo menos 6 caracteres.' })
+  password: string;
+
+  @ApiPropertyOptional({ example: '+5543999999999' })
+  @IsString()
+  @IsOptional()
+  phone?: string;
+  
+  @ApiPropertyOptional({
+    example: '12345678901',
+    description: 'CPF (apenas números ou formatado)',
+  })
+  @IsString()
+  @IsOptional()
+  @Matches(/^\d{3}\.?\d{3}\.?\d{3}-?\d{2}$/, {
+    message: 'CPF deve estar em um formato válido (11 dígitos)',
+  })
+  cpf?: string;
+
   @ApiProperty({ example: 'contato@arena.com.br' })
   @IsNotEmpty()
   @IsString()
@@ -71,11 +98,6 @@ export class PublicCheckoutDto {
   @IsNotEmpty()
   @IsString()
   cpfCnpj: string;
-
-  @ApiPropertyOptional({ example: '43999999999' })
-  @IsOptional()
-  @IsString()
-  phone?: string;
 
   @ApiPropertyOptional({ example: 'Maringá' })
   @IsOptional()
