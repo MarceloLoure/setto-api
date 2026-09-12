@@ -6,9 +6,10 @@ import { ArenaInvitesModule } from '../invite/arena-invite.module';
 import { PrismaModule } from 'src/prisma/prisma.module';
 import { PublicCheckoutService } from './public-checkout.service';
 import { AuthModule } from 'src/auth/auth.module';
+import { MailModule } from 'src/email/mail.module';
 
 @Module({
-  imports: [SuperAdminModule, ArenaInvitesModule, PrismaModule, AuthModule],
+  imports: [SuperAdminModule, ArenaInvitesModule, PrismaModule, AuthModule, MailModule],
   controllers: [PublicPlansController, PublicInvitesController],
   providers: [
     PublicCheckoutService,

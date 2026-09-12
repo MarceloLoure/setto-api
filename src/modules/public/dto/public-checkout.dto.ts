@@ -89,10 +89,15 @@ export class PublicCheckoutDto {
   })
   cpf?: string;
 
-  @ApiProperty({ example: 'contato@arena.com.br' })
+  @ApiProperty({ example: 'contato@user.com.br' })
   @IsNotEmpty()
   @IsString()
   email: string;
+
+   @ApiProperty({ example: 'contato@arena.com.br' })
+  @IsNotEmpty()
+  @IsString()
+  arenaEmail: string;
 
   @ApiProperty({ example: '83873371000105' })
   @IsNotEmpty()

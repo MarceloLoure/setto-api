@@ -1,19 +1,22 @@
-import { Injectable, BadRequestException, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ConflictException, UnauthorizedException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PublicCheckoutDto } from './dto/public-checkout.dto';
 import { Role } from '@prisma/client';
 import axios from 'axios';
 import { PrismaService } from 'src/prisma/prisma.service';
+import { MailService } from 'src/email/mail.service';
 
 @Injectable()
 export class PublicCheckoutService {
+  private readonly logger = new Logger(PublicCheckoutService.name);
   private readonly asaasApiUrl = process.env.ASAAS_API_URL || 'https://api-sandbox.asaas.com/v3';
   private readonly asaasApiKey = process.env.ASAAS_API_KEY;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly mailService: MailService,
   ) {}
 
   private get headers() {
@@ -21,6 +24,9 @@ export class PublicCheckoutService {
   }
 
   async processCheckout(dto: PublicCheckoutDto) {
+    const cleanArenaDoc = dto.cpfCnpj.replace(/\D/g, '');
+    const arenaEmail = dto.arenaEmail || dto.email;
+
     const plan = await this.prisma.platformPlan.findUnique({
       where: { id: dto.platformPlanId },
     });
@@ -29,35 +35,58 @@ export class PublicCheckoutService {
       throw new BadRequestException('Plano selecionado inválido ou inativo.');
     }
 
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+    // 2. Trava de Segurança contra Invasão de Arena Existente
+    const existingArena = await this.prisma.arena.findFirst({
+      where: {
+        OR: [{ cnpj: cleanArenaDoc }, { email: arenaEmail }],
+      },
     });
 
-    if (existingUser) {
+    if (existingArena) {
       throw new ConflictException(
-        'Este e-mail já possui uma conta na Setto. Faça login e contrate o plano pelo painel de gestão.',
+        'Esta Arena (CNPJ/CPF ou E-mail) já está cadastrada no sistema. Entre em contato com o suporte se precisar de ajuda.',
       );
     }
 
-    // Variables for tracking created DB records (for rollback on gateway errors)
-    let newAdminCreatedId: string | null = null;
-    let arenaCreatedId: string | null = null;
-
-    // 1. Criar ou reutilizar o registro da Arena
-    const existingArena = await this.prisma.arena.findFirst({
+    const existingUser = await this.prisma.user.findUnique({
       where: { email: dto.email },
-      include: { admins: { select: { id: true } } },
+      select: {
+        id: true,
+        email: true,
+        password: true, // <--- GARANTE A BUSCA DO HASH DA SENHA
+        name: true,
+        role: true,
+      },
     });
 
-    const cleanArenaDoc = dto.cpfCnpj.replace(/\D/g, '');
-    const isCnpj = cleanArenaDoc.length > 11;
+    let adminUser;
+    let isNewUser = false;
 
-    let arena;
+    if (existingUser) {
+      // Usuário já possui conta (ex: Atleta). Valida a senha para confirmar a posse da conta.
+      if (!existingUser.password) {
+        throw new UnauthorizedException('Conta existente sem senha definida. Redefina sua senha.');
+      }
 
-    if (!existingArena) {
+      const isPasswordValid = await bcrypt.compare(dto.password, existingUser.password);
+      if (!isPasswordValid) {
+        throw new UnauthorizedException('Senha incorreta para a conta de usuário informada.');
+      }
+
+      // Atualiza o perfil para o papel de Administrador de Arena se ainda não for
+      adminUser = await this.prisma.user.update({
+        where: { id: existingUser.id },
+        data: {
+          role: Role.ARENA_ADMIN,
+          ...(dto.phone && { phone: dto.phone }),
+          ...(dto.cpf && { cpf: dto.cpf }),
+        },
+      });
+    } else {
+      // Criação de nova conta de Usuário Gestor
+      isNewUser = true;
       const hashedPassword = await bcrypt.hash(dto.password, 10);
-
-      const newAdmin = await this.prisma.user.create({
+      adminUser = await this.prisma.user.create({
         data: {
           name: dto.name,
           email: dto.email,
@@ -67,60 +96,43 @@ export class PublicCheckoutService {
           role: Role.ARENA_ADMIN,
         },
       });
-      newAdminCreatedId = newAdmin.id;
+    }
 
+    // Trackers para Rollback caso ocorra falha na integração do Gateway
+    let arenaCreatedId: string | null = null;
+    let newAdminCreatedId: string | null = isNewUser ? adminUser.id : null;
+
+    // 4. Criar a Arena e vincular ao Administrador
+    let arena;
+    try {
       arena = await this.prisma.arena.create({
         data: {
           name: dto.arenaName,
           cnpj: cleanArenaDoc,
-          email: dto.email,
+          email: arenaEmail,
           city: dto.city!,
           state: dto.state!,
           zipCode: dto.zipCode!,
           phone: dto.phone,
-          admins: { connect: { id: newAdmin.id } },
+          admins: { connect: { id: adminUser.id } },
         },
-        include: { admins: { select: { id: true } } },
       });
       arenaCreatedId = arena.id;
-    } else if (existingArena.admins.length === 0) {
-      const hashedPassword = await bcrypt.hash(dto.password, 10);
-
-      const newAdmin = await this.prisma.user.create({
-        data: {
-          name: dto.name,
-          email: dto.email,
-          password: hashedPassword,
-          phone: dto.phone,
-          role: Role.ARENA_ADMIN,
-        },
-      });
-      newAdminCreatedId = newAdmin.id;
-
-      arena = await this.prisma.arena.update({
-        where: { id: arena.id },
-        data: { admins: { connect: { id: newAdmin.id } } },
-        include: { admins: { select: { id: true } } },
-      });
+    } catch (error) {
+      await this.rollbackTransaction(null, newAdminCreatedId);
+      throw new BadRequestException('Erro ao criar os dados da arena.');
     }
 
-    const arenaAdmin = await this.prisma.user.findUniqueOrThrow({
-      where: { id: arena.admins[0].id },
-      include: {
-        avatar: { select: { id: true, name: true, path: true } },
-      },
-    });
-
-    // 2. Criar ou buscar o Cliente no Asaas
+    // 5. Integração com Gateway de Pagamento (Asaas - Customer)
     let asaasCustomerId: string;
     try {
-      const existingResponse = await axios.get(
+      const existingCustomerResponse = await axios.get(
         `${this.asaasApiUrl}/customers?cpfCnpj=${dto.cpfCnpj}`,
         { headers: this.headers },
       );
 
-      if (existingResponse.data?.data?.length > 0) {
-        asaasCustomerId = existingResponse.data.data[0].id;
+      if (existingCustomerResponse.data?.data?.length > 0) {
+        asaasCustomerId = existingCustomerResponse.data.data[0].id;
       } else {
         const customerResponse = await axios.post(
           `${this.asaasApiUrl}/customers`,
@@ -135,9 +147,9 @@ export class PublicCheckoutService {
         asaasCustomerId = customerResponse.data.id;
       }
     } catch (error) {
-      console.error('Erro Asaas Customer:', error?.response?.data || error);
+      this.logger.error('Erro Asaas Customer:', error?.response?.data || error);
       await this.rollbackTransaction(arenaCreatedId, newAdminCreatedId);
-      throw new BadRequestException('Erro ao cadastrar ou localizar cliente no gateway de pagamento.');
+      throw new BadRequestException('Erro ao registrar cliente no gateway de pagamento.');
     }
 
     // 3. Criar registro da Assinatura no banco local
@@ -213,7 +225,7 @@ export class PublicCheckoutService {
       });
     } catch (error) {
       const asaasError = axios.isAxiosError(error) ? error.response?.data : undefined;
-      console.error('Erro Asaas Subscription:', asaasError || error);
+      this.logger.error('Erro Asaas Subscription:', asaasError || error);
       
       await this.rollbackTransaction(arenaCreatedId, newAdminCreatedId, subscription.id);
       
@@ -221,11 +233,11 @@ export class PublicCheckoutService {
       throw new BadRequestException(asaasMsg);
     }
 
-    // 6. Gerar JWT e resposta no mesmo formato do AuthService
+    // 9. Autenticação e Construção da Resposta
     const accessToken = this.jwtService.sign({
-      sub: arenaAdmin.id,
-      email: arenaAdmin.email,
-      role: arenaAdmin.role,
+      sub: adminUser.id,
+      email: adminUser.email,
+      role: adminUser.role,
     });
 
     const paymentResponseDetails: any = {
@@ -234,11 +246,10 @@ export class PublicCheckoutService {
       billingType: dto.billingType,
       accessToken,
       user: {
-        id: arenaAdmin.id,
-        name: arenaAdmin.name,
-        email: arenaAdmin.email,
-        role: arenaAdmin.role,
-        avatar: arenaAdmin.avatar ?? null,
+        id: adminUser.id,
+        name: adminUser.name,
+        email: adminUser.email,
+        role: adminUser.role,
         isManager: true,
       },
       arena: {
@@ -246,6 +257,9 @@ export class PublicCheckoutService {
         name: arena.name,
       },
     };
+
+    let pixData: { encodedImage?: string; payload?: string; expirationDate?: string } | undefined;
+    let invoiceUrl: string = asaasSub.invoiceUrl;
 
     if (dto.billingType === 'PIX') {
       try {
@@ -262,21 +276,35 @@ export class PublicCheckoutService {
             { headers: this.headers },
           );
 
-          paymentResponseDetails.pix = {
+          pixData = {
             encodedImage: qrCodeResponse.data.encodedImage,
             payload: qrCodeResponse.data.payload,
             expirationDate: qrCodeResponse.data.expirationDate,
+          };
+
+          paymentResponseDetails.pix = {
+            ...pixData,
             paymentId: firstPayment.id,
           };
+          if (firstPayment.invoiceUrl) {
+            invoiceUrl = firstPayment.invoiceUrl;
+          }
         }
       } catch (error) {
-        console.error('Erro ao buscar Pix QR Code:', error?.response?.data || error);
-        paymentResponseDetails.invoiceUrl = asaasSub.invoiceUrl;
+        this.logger.error('Erro ao buscar Pix QR Code:', error?.response?.data || error);
       }
     } else if (dto.billingType === 'CREDIT_CARD') {
       paymentResponseDetails.status = asaasSub.status;
-      paymentResponseDetails.invoiceUrl = asaasSub.invoiceUrl;
     }
+
+    this.sendCheckoutEmail({
+      to: dto.email,
+      userName: dto.name,
+      arenaName: dto.arenaName,
+      billingType: dto.billingType,
+      invoiceUrl,
+      pixPayload: pixData?.payload,
+    }).catch((err) => this.logger.error('Falha no envio de e-mail do checkout:', err));
 
     return paymentResponseDetails;
   }
@@ -312,5 +340,24 @@ export class PublicCheckoutService {
       planName: registrationToken.plan.name,
       planId: registrationToken.planId,
     };
+  }
+
+  // Método auxiliar para envio de e-mail de cobrança
+  private async sendCheckoutEmail(params: {
+    to: string;
+    userName: string;
+    arenaName: string;
+    billingType: string;
+    invoiceUrl?: string;
+    pixPayload?: string;
+  }) {
+    return this.mailService.sendCheckoutConfirmationEmail({
+      toEmail: params.to,
+      userName: params.userName,
+      arenaName: params.arenaName,
+      billingType: params.billingType,
+      invoiceUrl: params.invoiceUrl,
+      pixPayload: params.pixPayload,
+    });
   }
 }
