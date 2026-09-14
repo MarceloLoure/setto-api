@@ -228,4 +228,20 @@ export class UsersService {
       },
     });
   }
+
+  async deleteAccount(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Usuário não encontrado.');
+    }
+
+    await this.prisma.user.delete({
+      where: { id: userId },
+    });
+
+    return { message: 'Sua conta foi excluída com sucesso.' };
+  }
 }

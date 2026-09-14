@@ -94,30 +94,11 @@ export class PublicCheckoutDto {
   @IsString()
   email: string;
 
-   @ApiProperty({ example: 'contato@arena.com.br' })
-  @IsNotEmpty()
-  @IsString()
-  arenaEmail: string;
 
   @ApiProperty({ example: '83873371000105' })
   @IsNotEmpty()
   @IsString()
   cpfCnpj: string;
-
-  @ApiPropertyOptional({ example: 'Maringá' })
-  @IsOptional()
-  @IsString()
-  city?: string;
-
-  @ApiPropertyOptional({ example: 'PR' })
-  @IsOptional()
-  @IsString()
-  state?: string;
-
-  @ApiPropertyOptional({ example: '87000000' })
-  @IsOptional()
-  @IsString()
-  zipCode?: string;
 
   @ApiProperty({ enum: CheckoutBillingType, example: CheckoutBillingType.PIX })
   @IsNotEmpty()

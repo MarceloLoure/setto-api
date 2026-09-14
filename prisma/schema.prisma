@@ -338,8 +338,8 @@ model Booking {
 
   court        Court                @relation(fields: [courtId], references: [id])
   arena        Arena                @relation(fields: [arenaId], references: [id])
-  user         User?                @relation(fields: [userId], references: [id])
-  coach        User?                @relation("CoachBookings", fields: [coachId], references: [id])
+  user  User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  coach User? @relation("CoachBookings", fields: [coachId], references: [id], onDelete: SetNull)
   participants BookingParticipant[]
   payment      Payment?
 
@@ -357,7 +357,7 @@ model BookingParticipant {
   createdAt DateTime          @default(now())
 
   booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  user    User?   @relation(fields: [userId], references: [id])
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([bookingId, userId])
 }
@@ -404,11 +404,11 @@ model Payment {
 
   // Vinculo Opcional com o Atleta/Cliente (se souber quem pagou)
   userId String?
-  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user        User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   // Funcionário / Admin que lançou o pagamento
-  createdById String
-  createdBy   User   @relation("PaymentsCreated", fields: [createdById], references: [id])
+  createdById String?
+  createdBy   User?   @relation("PaymentsCreated", fields: [createdById], references: [id], onDelete: SetNull)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -560,7 +560,7 @@ model PlatformPlan {
 
 model ArenaSubscription {
   id                  String    @id @default(uuid())
-  arenaId             String
+  arenaId             String?
   platformPlanId      String // <-- Ajuste o nome do campo para bater com a relação abaixo
   asaasSubscriptionId String?   @unique // sub_xxxxxx (opcional para aceitar nulo)
   status              SubscriptionStatus @default(ACTIVE)
@@ -570,7 +570,7 @@ model ArenaSubscription {
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
-  arena        Arena        @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+  arena        Arena?        @relation(fields: [arenaId], references: [id], onDelete: Cascade)
   platformPlan PlatformPlan @relation(fields: [platformPlanId], references: [id])
 
   @@map("arena_subscriptions")

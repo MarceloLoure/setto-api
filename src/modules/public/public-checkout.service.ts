@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException, NotFoundException, ConflictException, UnauthorizedException, Logger } from '@nestjs/common';
+import { v4 as uuidv4 } from 'uuid';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PublicCheckoutDto } from './dto/public-checkout.dto';
@@ -24,8 +25,8 @@ export class PublicCheckoutService {
   }
 
   async processCheckout(dto: PublicCheckoutDto) {
-    const cleanArenaDoc = dto.cpfCnpj.replace(/\D/g, '');
-    const arenaEmail = dto.arenaEmail || dto.email;
+   const cleanDoc = dto.cpfCnpj.replace(/\D/g, '');
+    const userEmail = dto.email.toLowerCase().trim();
 
     const plan = await this.prisma.platformPlan.findUnique({
       where: { id: dto.platformPlanId },
@@ -38,7 +39,7 @@ export class PublicCheckoutService {
     // 2. Trava de Segurança contra Invasão de Arena Existente
     const existingArena = await this.prisma.arena.findFirst({
       where: {
-        OR: [{ cnpj: cleanArenaDoc }, { email: arenaEmail }],
+        OR: [{ cnpj: cleanDoc }, { email: userEmail }],
       },
     });
 
@@ -98,36 +99,14 @@ export class PublicCheckoutService {
       });
     }
 
-    // Trackers para Rollback caso ocorra falha na integração do Gateway
-    let arenaCreatedId: string | null = null;
-    let newAdminCreatedId: string | null = isNewUser ? adminUser.id : null;
+    // Tracker para Rollback caso ocorra falha na integração com Gateway
+    let newUserIdForRollback: string | null = isNewUser ? adminUser.id : null;
 
-    // 4. Criar a Arena e vincular ao Administrador
-    let arena;
-    try {
-      arena = await this.prisma.arena.create({
-        data: {
-          name: dto.arenaName,
-          cnpj: cleanArenaDoc,
-          email: arenaEmail,
-          city: dto.city!,
-          state: dto.state!,
-          zipCode: dto.zipCode!,
-          phone: dto.phone,
-          admins: { connect: { id: adminUser.id } },
-        },
-      });
-      arenaCreatedId = arena.id;
-    } catch (error) {
-      await this.rollbackTransaction(null, newAdminCreatedId);
-      throw new BadRequestException('Erro ao criar os dados da arena.');
-    }
-
-    // 5. Integração com Gateway de Pagamento (Asaas - Customer)
+    // 4. Integração com Gateway de Pagamento (Asaas Customer da Plataforma)
     let asaasCustomerId: string;
     try {
       const existingCustomerResponse = await axios.get(
-        `${this.asaasApiUrl}/customers?cpfCnpj=${dto.cpfCnpj}`,
+        `${this.asaasApiUrl}/customers?cpfCnpj=${cleanDoc}`,
         { headers: this.headers },
       );
 
@@ -137,9 +116,9 @@ export class PublicCheckoutService {
         const customerResponse = await axios.post(
           `${this.asaasApiUrl}/customers`,
           {
-            name: dto.arenaName,
-            email: dto.email,
-            cpfCnpj: dto.cpfCnpj,
+            name: dto.arenaName || dto.name,
+            email: userEmail,
+            cpfCnpj: cleanDoc,
             phone: dto.phone,
           },
           { headers: this.headers },
@@ -148,14 +127,13 @@ export class PublicCheckoutService {
       }
     } catch (error) {
       this.logger.error('Erro Asaas Customer:', error?.response?.data || error);
-      await this.rollbackTransaction(arenaCreatedId, newAdminCreatedId);
+      await this.rollbackTransaction(null, newUserIdForRollback);
       throw new BadRequestException('Erro ao registrar cliente no gateway de pagamento.');
     }
 
-    // 3. Criar registro da Assinatura no banco local
+    // 5. Criar registro da Assinatura no banco local (ainda sem arenaId)
     const subscription = await this.prisma.arenaSubscription.create({
       data: {
-        arenaId: arena.id,
         platformPlanId: plan.id,
         status: 'PENDING',
       },
@@ -168,11 +146,10 @@ export class PublicCheckoutService {
       value: Number(plan.price),
       nextDueDate: todayStr,
       cycle: plan.billingCycle,
-      description: `Assinatura Plano ${plan.name} - ${dto.arenaName}`,
+      description: `Assinatura Plano ${plan.name} - ${dto.arenaName || dto.name}`,
       externalReference: `arena_sub:${subscription.id}`,
     };
 
-    // 4. Tratar parâmetros de cartão de crédito
     if (dto.billingType === 'CREDIT_CARD') {
       if (dto.cardId) {
         const savedCard = await this.prisma.creditCard.findUnique({
@@ -180,7 +157,7 @@ export class PublicCheckoutService {
         });
 
         if (!savedCard) {
-          await this.rollbackTransaction(arenaCreatedId, newAdminCreatedId, subscription.id);
+          await this.rollbackTransaction(subscription.id, newUserIdForRollback);
           throw new BadRequestException('Cartão de crédito informado não foi encontrado.');
         }
         subPayload.creditCardToken = savedCard.asaasToken;
@@ -196,20 +173,20 @@ export class PublicCheckoutService {
         };
         subPayload.creditCardHolderInfo = {
           name: dto.creditCardHolderInfo?.name || dto.creditCard.holderName,
-          email: dto.email,
-          cpfCnpj: dto.cpfCnpj,
-          postalCode: dto.creditCardHolderInfo?.postalCode || dto.zipCode || '00000000',
+          email: userEmail,
+          cpfCnpj: cleanDoc,
+          postalCode: dto.creditCardHolderInfo?.postalCode || '00000000',
           addressNumber: dto.creditCardHolderInfo?.addressNumber || 'S/N',
           phone: dto.phone,
           mobilePhone: dto.phone,
         };
       } else {
-        await this.rollbackTransaction(arenaCreatedId, newAdminCreatedId, subscription.id);
+        await this.rollbackTransaction(subscription.id, newUserIdForRollback);
         throw new BadRequestException('Dados do cartão, cardId ou creditCardToken são obrigatórios.');
       }
     }
 
-    // 5. Criar Assinatura no Asaas
+    // 6. Criar Assinatura no Asaas
     let asaasSub: any;
     try {
       const subResponse = await axios.post(
@@ -226,35 +203,36 @@ export class PublicCheckoutService {
     } catch (error) {
       const asaasError = axios.isAxiosError(error) ? error.response?.data : undefined;
       this.logger.error('Erro Asaas Subscription:', asaasError || error);
-      
-      await this.rollbackTransaction(arenaCreatedId, newAdminCreatedId, subscription.id);
-      
+      await this.rollbackTransaction(subscription.id, newUserIdForRollback);
       const asaasMsg = asaasError?.errors?.[0]?.description || 'Erro ao gerar cobrança da assinatura no Asaas.';
       throw new BadRequestException(asaasMsg);
     }
 
-    // 9. Autenticação e Construção da Resposta
-    const accessToken = this.jwtService.sign({
-      sub: adminUser.id,
-      email: adminUser.email,
-      role: adminUser.role,
+    // 7. Criar o Token de Onboarding da Arena
+    const tokenString = uuidv4();
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7); // Expira em 7 dias
+
+    const registrationToken = await this.prisma.arenaRegistrationToken.create({
+      data: {
+        token: tokenString,
+        email: userEmail,
+        planId: plan.id,
+        expiresAt,
+      },
     });
 
+    // 8. Tratamento PIX / Resposta
     const paymentResponseDetails: any = {
       subscriptionId: subscription.id,
       asaasSubscriptionId: asaasSub.id,
       billingType: dto.billingType,
-      accessToken,
+      inviteToken: registrationToken.token,
       user: {
         id: adminUser.id,
         name: adminUser.name,
         email: adminUser.email,
         role: adminUser.role,
-        isManager: true,
-      },
-      arena: {
-        id: arena.id,
-        name: arena.name,
       },
     };
 
@@ -297,14 +275,16 @@ export class PublicCheckoutService {
       paymentResponseDetails.status = asaasSub.status;
     }
 
-    this.sendCheckoutEmail({
-      to: dto.email,
-      userName: dto.name,
-      arenaName: dto.arenaName,
-      billingType: dto.billingType,
-      invoiceUrl,
-      pixPayload: pixData?.payload,
-    }).catch((err) => this.logger.error('Falha no envio de e-mail do checkout:', err));
+    // 9. Envio de E-mail de Boas-Vindas com Token de Onboarding
+    try {
+      await this.mailService.sendArenaInviteEmail(
+        registrationToken.email,
+        registrationToken.token,
+        plan.name,
+      );
+    } catch (error) {
+      this.logger.error('Falha no envio de e-mail do checkout:', error);
+    }
 
     return paymentResponseDetails;
   }
@@ -340,24 +320,5 @@ export class PublicCheckoutService {
       planName: registrationToken.plan.name,
       planId: registrationToken.planId,
     };
-  }
-
-  // Método auxiliar para envio de e-mail de cobrança
-  private async sendCheckoutEmail(params: {
-    to: string;
-    userName: string;
-    arenaName: string;
-    billingType: string;
-    invoiceUrl?: string;
-    pixPayload?: string;
-  }) {
-    return this.mailService.sendCheckoutConfirmationEmail({
-      toEmail: params.to,
-      userName: params.userName,
-      arenaName: params.arenaName,
-      billingType: params.billingType,
-      invoiceUrl: params.invoiceUrl,
-      pixPayload: params.pixPayload,
-    });
   }
 }

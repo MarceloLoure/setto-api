@@ -2,7 +2,10 @@ import {
   Body,
   Controller,
   Get,
+  Delete,
   Patch,
+  HttpCode,
+  HttpStatus,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
@@ -96,5 +99,14 @@ export class UsersController {
   @ApiResponse({ status: 200, description: 'Histórico de pagamentos retornado com sucesso.' })
   async getMyPayments( @CurrentUser('id') userId: string,) {
     return this.usersService.getUserPayments(userId);
+  }
+
+  @Delete('me')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Deletar/Excluir a conta do usuário logado (Requisito Apple Store)' })
+  @ApiResponse({ status: 200, description: 'Conta excluída com sucesso.' })
+  @ApiResponse({ status: 404, description: 'Usuário não encontrado.' })
+  async deleteAccount(@CurrentUser('id') userId: string) {
+    return this.usersService.deleteAccount(userId);
   }
 }
