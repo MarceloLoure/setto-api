@@ -162,7 +162,7 @@ export class AsaasWebhookService {
 
       // Emite o token de cadastro no primeiro pagamento (Onboarding)
       if (isFirstPayment) {
-        const arenaEmail = subscription.arena.email;
+        const arenaEmail = subscription.arena?.email;
         if (!arenaEmail) {
           this.logger.warn('[Asaas] Arena sem e-mail para envio do token de cadastro.');
           return;

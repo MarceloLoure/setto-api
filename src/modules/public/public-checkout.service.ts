@@ -208,7 +208,7 @@ export class PublicCheckoutService {
       throw new BadRequestException(asaasMsg);
     }
 
-    // 7. Criar o Token de Onboarding da Arena
+    // 7. Criar o Token de Onboarding da Arena (MANTÉM!)
     const tokenString = uuidv4();
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7); // Expira em 7 dias
@@ -273,17 +273,6 @@ export class PublicCheckoutService {
       }
     } else if (dto.billingType === 'CREDIT_CARD') {
       paymentResponseDetails.status = asaasSub.status;
-    }
-
-    // 9. Envio de E-mail de Boas-Vindas com Token de Onboarding
-    try {
-      await this.mailService.sendArenaInviteEmail(
-        registrationToken.email,
-        registrationToken.token,
-        plan.name,
-      );
-    } catch (error) {
-      this.logger.error('Falha no envio de e-mail do checkout:', error);
     }
 
     return paymentResponseDetails;
