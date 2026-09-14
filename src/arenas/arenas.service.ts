@@ -433,6 +433,11 @@ export class ArenasService {
         ...(dto.postalCode !== undefined && { zipCode: dto.postalCode.replace(/\D/g, '') }),
         ...(dto.city && { city: dto.city }),
         ...(dto.state && { state: dto.state.toUpperCase() }),
+        ...(dto.cnpj && { cnpj: dto.cnpj }),
+        ...(dto.number && { number: dto.number }),
+        ...(dto.complement && { complement: dto.complement }),
+        ...(dto.neighborhood && { neighborhood: dto.neighborhood }),
+        ...(dto.zipCode && { zipCode: dto.zipCode }),
 
         // Upsert da Logo (cria novo registro ou atualiza o existente)
         ...(newLogo && {
