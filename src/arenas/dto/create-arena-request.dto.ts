@@ -212,7 +212,7 @@ export class CreateSubAccountDto {
   @IsString()
   @Length(2, 2, { message: 'O Estado deve conter exatamente 2 caracteres (ex: SP).' })
   @IsNotEmpty({ message: 'O Estado é obrigatório.' })
-  state?: string;
+  state: string;
 
   @IsOptional()
   @IsString()

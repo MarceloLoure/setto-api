@@ -38,7 +38,7 @@ export class ArenasService {
     // 1. Validação do Token de Convite
     const inviteToken = await this.prisma.arenaRegistrationToken.findUnique({
       where: { token: dto.token },
-      include: { plan: true },
+      include: { plan: true, arena: true },
     });
 
     if (!inviteToken) {
@@ -64,13 +64,11 @@ export class ArenasService {
 
     const cleanedCnpj = dto.cpfCnpj ? dto.cpfCnpj.replace(/\D/g, '') : null;
 
-    // 3. Localiza a Arena PENDENTE/CRIADA no Checkout pelo e-mail do convite
-    const existingArena = await this.prisma.arena.findFirst({
-      where: { email: inviteToken.email },
-    });
+    // 3. Localiza a Arena PENDENTE/CRIADA no Checkout pelo ID da Arena (associada ao token de convite) e valida se o CNPJ não está em uso por outra arena
+    const existingArena = inviteToken.arena;
 
     if (!existingArena) {
-      throw new NotFoundException('Nenhuma arena associada a este convite foi encontrada.');
+      throw new NotFoundException('Arena vinculada a este token não foi encontrada.');
     }
 
     // Validação de CNPJ se for diferente do atual ou se já estiver em uso por outra arena
@@ -149,7 +147,7 @@ export class ArenasService {
             neighborhood: dto.province,
             zipCode: cleanPostalCode,
             city: dto.city,
-            state: dto.state!.toUpperCase(),
+            state: dto.state.toUpperCase(),
             isActive: true,
             asaasAccountId: asaasOnboarding.success ? asaasOnboarding.asaasAccountId : existingArena.asaasAccountId,
             asaasWalletId: asaasOnboarding.success ? asaasOnboarding.asaasWalletId : existingArena.asaasWalletId,

@@ -168,25 +168,30 @@ export class AsaasWebhookService {
           return;
         }
 
-        const token = randomUUID();
-        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // Expiracao de 7 dias
-
-        await this.prisma.arenaRegistrationToken.create({
-          data: {
-            token,
+        const pendingToken = await this.prisma.arenaRegistrationToken.findFirst({
+          where: {
             planId: subscription.platformPlanId,
-            email: arenaEmail,
-            expiresAt,
+            isUsed: false,
           },
+          orderBy: { createdAt: 'desc' },
         });
 
-        const registrationUrl = `${process.env.FRONTEND_URL}/register?token=${token}`;
+        if (!pendingToken) {
+          this.logger.warn('[Asaas] Nenhum token de registro pendente encontrado.');
+          return;
+        }
 
-        await this.mailService.sendArenaInviteEmail(
-          arenaEmail,
-          token,
-          subscription.platformPlan.name
-        );
+        if (pendingToken) {
+          await this.mailService.sendArenaInviteEmail(
+            pendingToken.email,
+            pendingToken.token,
+            subscription.platformPlan.name,
+          );
+
+          this.logger.log(
+            `[Asaas] Assinatura ativada e e-mail de convite enviado com sucesso para ${pendingToken.email}`,
+          );
+        }
 
         this.logger.log(`[Asaas] Token de cadastro gerado e e-mail enviado para ${arenaEmail}`);
       }
