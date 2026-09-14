@@ -162,11 +162,11 @@ export class AsaasWebhookService {
 
       // Emite o token de cadastro no primeiro pagamento (Onboarding)
       if (isFirstPayment) {
-        const arenaEmail = subscription.arena?.email;
-        if (!arenaEmail) {
-          this.logger.warn('[Asaas] Arena sem e-mail para envio do token de cadastro.');
-          return;
-        }
+        // const arenaEmail = subscription.arena?.email;
+        // if (!arenaEmail) {
+        //   this.logger.warn('[Asaas] Arena sem e-mail para envio do token de cadastro.');
+        //   return;
+        // }
 
         const pendingToken = await this.prisma.arenaRegistrationToken.findFirst({
           where: {
@@ -193,7 +193,7 @@ export class AsaasWebhookService {
           );
         }
 
-        this.logger.log(`[Asaas] Token de cadastro gerado e e-mail enviado para ${arenaEmail}`);
+        this.logger.log(`[Asaas] Token de cadastro gerado e e-mail enviado para ${pendingToken.email}`);
       }
 
       return;

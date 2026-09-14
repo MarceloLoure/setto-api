@@ -19,7 +19,7 @@ export class MailService {
   }
 
   async sendArenaInviteEmail(toEmail: string, token: string, planName: string) {
-    const registerUrl = `${process.env.FRONTEND_URL}register/arena?token=${token}`;
+    const registerUrl = `${process.env.FRONTEND_URL}cadastro-arena?token=${token}`;
 
     try {
       await this.resend.emails.send({
