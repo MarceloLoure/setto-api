@@ -38,7 +38,7 @@ export class ArenasService {
     // 1. Validação do Token de Convite
     const inviteToken = await this.prisma.arenaRegistrationToken.findUnique({
       where: { token: dto.token },
-      include: { plan: true, arena: true },
+      include: { plan: true },
     });
 
     if (!inviteToken) {
@@ -64,28 +64,18 @@ export class ArenasService {
 
     const cleanedCnpj = dto.cpfCnpj ? dto.cpfCnpj.replace(/\D/g, '') : null;
 
-    // 3. Localiza a Arena PENDENTE/CRIADA no Checkout pelo ID da Arena (associada ao token de convite) e valida se o CNPJ não está em uso por outra arena
-    const existingArena = inviteToken.arena;
-
-    if (!existingArena) {
-      throw new NotFoundException('Arena vinculada a este token não foi encontrada.');
-    }
-
-    // Validação de CNPJ se for diferente do atual ou se já estiver em uso por outra arena
+    // 3. Validação de CNPJ único no sistema
     if (cleanedCnpj) {
       const cnpjConflict = await this.prisma.arena.findFirst({
-        where: {
-          cnpj: cleanedCnpj,
-          id: { not: existingArena.id },
-        },
+        where: { cnpj: cleanedCnpj },
       });
 
       if (cnpjConflict) {
-        throw new ConflictException('Já existe outra arena cadastrada com este CNPJ.');
+        throw new ConflictException('Já existe uma arena cadastrada com este CNPJ.');
       }
     }
 
-    // 4. Tratamento e Sanitização de Dados para o BaaS do Asaas
+    // 4. Tratamento de Dados
     const cpfCnpjForOnboarding = cleanedCnpj || (user.cpf ? user.cpf.replace(/\D/g, '') : null);
     const cleanPhone = (dto.phone || user.phone || '').replace(/\D/g, '');
     const cleanMobilePhone = (dto.mobilePhone || dto.phone || user.phone || '').replace(/\D/g, '');
@@ -95,84 +85,63 @@ export class ArenasService {
       throw new BadRequestException('O CEP deve conter exatamente 8 dígitos numéricos.');
     }
 
-    const webhookSecret = process.env.ASAAS_WEBHOOK_SECRET || 'default-webhook-secret-min-32-chars';
-
-    // Configuração dos webhooks exigidos no BaaS
-    const defaultWebhooks = [
-      {
-        name: `Webhook Cobranças — ${dto.name}`,
-        url: `${process.env.BACKEND_URL}/asaas/webhooks`,
-        email: dto.email,
-        sendType: 'SEQUENTIALLY',
-        interrupted: false,
-        enabled: true,
-        apiVersion: 3,
-        authToken: webhookSecret,
-        events: ['PAYMENT_CREATED', 'PAYMENT_UPDATED', 'PAYMENT_CONFIRMED', 'PAYMENT_RECEIVED'],
-      },
-    ];
-
-    // Executa o onboarding BaaS enviando o payload padronizado
-    const asaasOnboarding = await this.attemptAsaasOnboarding(existingArena.id, {
-      token: dto.token,
-      name: dto.name,
-      email: inviteToken.email || user.email,
-      cpfCnpj: cpfCnpjForOnboarding,
-      companyType: dto.companyType || (cpfCnpjForOnboarding?.length === 14 ? 'LIMITED' : 'MEI'),
-      phone: cleanPhone,
-      mobilePhone: cleanMobilePhone,
-      incomeValue: Number(dto.incomeValue || 10000),
-      address: dto.address,
-      addressNumber: dto.addressNumber,
-      complement: dto.complement,
-      province: dto.province,
-      postalCode: cleanPostalCode,
-      city: dto.city,
-      state: dto.state,
-      webhooks: dto.webhooks && dto.webhooks.length > 0 ? dto.webhooks : defaultWebhooks,
-    });
-
-    // 5. Execução da Transação no Banco de Dados
+    // 5. Execução no BaaS Asaas (usando um ID temporário/draft se necessário ou cria a Arena antes)
+    // Criaremos a Arena na transação
     try {
       const result = await this.prisma.$transaction(async (tx) => {
-        // Atualiza os dados da Arena EXISTENTE
-        const updatedArena = await tx.arena.update({
-          where: { id: existingArena.id },
+        // 5.1 CRIAR A ARENA NO BANCO
+        const createdArena = await tx.arena.create({
           data: {
             name: dto.name,
             cnpj: cleanedCnpj,
+            email: inviteToken.email || user.email,
+            phone: cleanPhone,
             address: dto.address,
             number: dto.addressNumber,
             complement: dto.complement,
             neighborhood: dto.province,
             zipCode: cleanPostalCode,
-            city: dto.city,
+            city: dto.city!,
             state: dto.state.toUpperCase(),
             isActive: true,
-            asaasAccountId: asaasOnboarding.success ? asaasOnboarding.asaasAccountId : existingArena.asaasAccountId,
-            asaasWalletId: asaasOnboarding.success ? asaasOnboarding.asaasWalletId : existingArena.asaasWalletId,
-            isPayoutEnabled: asaasOnboarding.success ? true : existingArena.isPayoutEnabled,
             admins: {
               connect: { id: userId },
             },
           },
         });
 
-        // Consome e inativa o token de convite
+        // 5.2 VINCULAR A ASSINATURA PENDENTE DO CHECKOUT À NOVA ARENA
+        const pendingSubscription = await tx.arenaSubscription.findFirst({
+          where: {
+            platformPlanId: inviteToken.planId,
+            arenaId: null,
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (pendingSubscription) {
+          await tx.arenaSubscription.update({
+            where: { id: pendingSubscription.id },
+            data: { arenaId: createdArena.id },
+          });
+        }
+
+        // 5.3 CONSUMIR O TOKEN DE REGISTRO
         await tx.arenaRegistrationToken.update({
           where: { id: inviteToken.id },
           data: {
             isUsed: true,
             usedAt: new Date(),
+            arenaId: createdArena.id, // Opcional: salva o id da arena no token
           },
         });
 
-        // Promove o Usuário para ARENA_ADMIN e vincula à Arena atualizada
+        // 5.4 PROMOVER O USUÁRIO E SETAR A ARENA ATIVA
         const updatedUser = await tx.user.update({
           where: { id: userId },
           data: {
             role: Role.ARENA_ADMIN,
-            activeArenaId: updatedArena.id,
+            activeArenaId: createdArena.id,
           },
           include: {
             arenasManaged: {
@@ -181,10 +150,57 @@ export class ArenasService {
           },
         });
 
-        return { arena: updatedArena, user: updatedUser };
+        return { arena: createdArena, user: updatedUser };
       });
 
-      // 6. Emissão do JWT atualizado
+      // 6. Tentar Onboarding no Asaas (após ter a arena criada)
+      const webhookSecret = process.env.ASAAS_WEBHOOK_SECRET || 'default-webhook-secret-min-32-chars';
+      const defaultWebhooks = [
+        {
+          name: `Webhook Cobranças — ${dto.name}`,
+          url: `${process.env.BACKEND_URL}/asaas/webhooks`,
+          email: dto.email,
+          sendType: 'SEQUENTIALLY',
+          interrupted: false,
+          enabled: true,
+          apiVersion: 3,
+          authToken: webhookSecret,
+          events: ['PAYMENT_CREATED', 'PAYMENT_UPDATED', 'PAYMENT_CONFIRMED', 'PAYMENT_RECEIVED'],
+        },
+      ];
+
+      const asaasOnboarding = await this.attemptAsaasOnboarding(result.arena.id, {
+        token: dto.token,
+        name: dto.name,
+        email: inviteToken.email || user.email,
+        cpfCnpj: cpfCnpjForOnboarding,
+        companyType: dto.companyType || (cpfCnpjForOnboarding?.length === 14 ? 'LIMITED' : 'MEI'),
+        phone: cleanPhone,
+        mobilePhone: cleanMobilePhone,
+        incomeValue: Number(dto.incomeValue || 10000),
+        address: dto.address,
+        addressNumber: dto.addressNumber,
+        complement: dto.complement,
+        province: dto.province,
+        postalCode: cleanPostalCode,
+        city: dto.city,
+        state: dto.state,
+        webhooks: dto.webhooks && dto.webhooks.length > 0 ? dto.webhooks : defaultWebhooks,
+      });
+
+      // Se o onboarding BaaS funcionar, atualiza os IDs do Asaas na Arena
+      if (asaasOnboarding.success) {
+        await this.prisma.arena.update({
+          where: { id: result.arena.id },
+          data: {
+            asaasAccountId: asaasOnboarding.asaasAccountId,
+            asaasWalletId: asaasOnboarding.asaasWalletId,
+            isPayoutEnabled: true,
+          },
+        });
+      }
+
+      // 7. Emissão do JWT atualizado
       const newAccessToken = this.jwtService.sign({
         sub: result.user.id,
         email: result.user.email,
