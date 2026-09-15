@@ -8,6 +8,7 @@ import {
   Query,
   Request,
   UseGuards,
+  Ip
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -37,8 +38,9 @@ export class BookingsController {
   create(
     @CurrentUser() user: any,
     @Body() dto: CreateAppBookingDto,
+    @Ip() clientIp: string,
   ) {
-    return this.bookingsService.createAppBooking(user, dto);
+    return this.bookingsService.createAppBooking(user, dto, clientIp);
   }
 
   @Post(':id/checkout')

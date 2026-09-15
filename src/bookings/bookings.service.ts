@@ -50,7 +50,7 @@ export class BookingsService {
   // -------------------------------------------------------------
   // 1. FLUXO DO APP MOBILE (Atleta - Sem trava de impersonação)
   // -------------------------------------------------------------
-  async createAppBooking(user: any, dto: CreateAppBookingDto) {
+ async createAppBooking(user: any, dto: CreateAppBookingDto, clientIp: string) {
   const start = parseAppMobileTimestamp(dto.startTime);
   const end = parseAppMobileTimestamp(dto.endTime);
   const now = new Date();
@@ -72,7 +72,7 @@ export class BookingsService {
     );
   }
 
-  // 3. Sincroniza Customer no Asaas
+  // 3. Sincroniza Customer no Asaas (fora da transação principal)
   let asaasCustomerId = fullUser.asaasCustomerId;
   const customerData = {
     name: fullUser.name,
@@ -117,18 +117,20 @@ export class BookingsService {
     await this.asaasService.updateCustomer(asaasCustomerId, customerData).catch(() => {});
   }
 
-  // 4. Executa criação dentro do bloco isolado de transação
+  // PASSOS 4 & 5: Isolamento de Transação + Comunicação Externa Segura
+
+  let bookingResult: any;
+
+  // PASSO 4: Transação ultra-rápida no banco (Reserva a quadra e cria o registro PENDING)
   try {
-    return await this.prisma.$transaction(
+    bookingResult = await this.prisma.$transaction(
       async (tx) => {
-        // A) Valida disponibilidade da quadra
         const court = await this.fetchAndValidateCourtAvailability(tx, dto.courtId, start, end);
 
         const durationInMinutes = Math.round((end.getTime() - start.getTime()) / (1000 * 60));
         const durationInHours = durationInMinutes / 60;
         const hourlyRate = Number(court.hourlyRate);
 
-        // B) Calcula a taxa de serviço (teto de R$ 5,00 ou % cadastrada) e valor total
         const platformFeePercent = Number(court.arena.platformFeePercent ?? 5);
         const { courtBasePrice, serviceFee, totalPrice } = calculateServiceFee(
           hourlyRate,
@@ -136,7 +138,6 @@ export class BookingsService {
           platformFeePercent,
         );
 
-        // B) Cria a reserva
         const newBooking = await tx.booking.create({
           data: {
             type: BookingType.FREE_PLAY,
@@ -155,11 +156,6 @@ export class BookingsService {
           },
         });
 
-        // C) Calcula splits
-        const arenaWalletId = newBooking.arena.asaasWalletId!;
-        const dueDate = new Date().toISOString().slice(0, 10);
-
-        // D) Cria o registro de Payment local
         const localPayment = await tx.payment.create({
           data: {
             description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
@@ -175,142 +171,167 @@ export class BookingsService {
           },
         });
 
-        // E) Prepara o Payload do Asaas
-        const paymentPayload: any = {
-          customer: asaasCustomerId!,
-          billingType: dto.billingType,
-          value: totalPrice,
-          dueDate,
-          description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
-          externalReference: `booking:${newBooking.id}`,
-          split: [
-              { 
-                walletId: arenaWalletId, 
-                fixedValue: courtBasePrice
-              }
-            ],
-        };
-
-        if (dto.billingType === 'CREDIT_CARD') {
-          // Caso 1: Usando cartão salvo prévio (via cardId ou creditCardToken)
-          if (dto.cardId) {
-            const savedCard = fullUser.creditCards.find((c) => c.id === dto.cardId);
-            if (!savedCard) {
-              throw new BadRequestException('Cartão de crédito informado não encontrado.');
-            }
-            paymentPayload.creditCardToken = savedCard.asaasToken;
-          } else if (dto.creditCardToken) {
-            paymentPayload.creditCardToken = dto.creditCardToken;
-          } else {
-            // Caso 2: Digitando novo cartão
-            paymentPayload.creditCard = dto.creditCard;
-            paymentPayload.creditCardHolderInfo = dto.creditCardHolderInfo;
-          }
-        }
-
-        // F) Cria o pagamento no Asaas
-        const asaasPayment = await this.asaasService.createSplitPayment(paymentPayload);
-
-        let pixCopiaECola: string | undefined = undefined;
-        let paymentDetails: any = {
-          asaasPaymentId: asaasPayment.id,
-          billingType: dto.billingType,
-          status: asaasPayment.status,
+        return {
+          newBooking,
+          localPayment,
           courtBasePrice,
           serviceFee,
           totalPrice,
         };
-
-        // G) Trata a resposta conforme o tipo de pagamento
-        let finalBookingStatus: BookingStatus = BookingStatus.PENDING;
-        let finalPaymentStatus: PaymentStatus = PaymentStatus.PENDING;
-
-        if (dto.billingType === 'PIX') {
-          const qrCode = await this.asaasService.getPixQrCode(asaasPayment.id);
-          pixCopiaECola = qrCode.payload;
-          paymentDetails.pix = qrCode;
-        } else if (dto.billingType === 'CREDIT_CARD') {
-          const token = asaasPayment.creditCard?.creditCardToken;
-          paymentDetails.creditCardToken = token;
-
-          // Se solicitou salvar o novo cartão e o Asaas devolveu o token
-          if (dto.saveCard && token && !dto.cardId && !dto.creditCardToken) {
-            const existingCount = fullUser.creditCards.length;
-
-            await tx.creditCard.upsert({
-              where: { asaasToken: token },
-              update: {
-                // Se o cartão já existe no banco, apenas atualiza dados se necessário
-                holderName: dto.creditCardHolderInfo?.name || fullUser.name,
-                expiryMonth: dto.creditCard?.expiryMonth || '',
-                expiryYear: dto.creditCard?.expiryYear || '',
-              },
-              create: {
-                userId: user.id,
-                asaasToken: token,
-                brand: asaasPayment.creditCard?.creditCardBrand || 'UNKNOWN',
-                lastFourDigits:
-                  asaasPayment.creditCard?.creditCardNumber ||
-                  dto.creditCard?.number.slice(-4) ||
-                  '0000',
-                holderName: dto.creditCardHolderInfo?.name || fullUser.name,
-                expiryMonth: dto.creditCard?.expiryMonth || '',
-                expiryYear: dto.creditCard?.expiryYear || '',
-                isDefault: existingCount === 0,
-              },
-            });
-          }
-
-          // Se a cobrança no cartão foi capturada e aprovada imediatamente
-          if (asaasPayment.status === 'CONFIRMED' || asaasPayment.status === 'RECEIVED') {
-            finalPaymentStatus = PaymentStatus.COMPLETED;
-            finalBookingStatus = BookingStatus.CONFIRMED;
-          }
-        }
-
-        // H) Atualiza o Payment e a Reserva no banco
-        await tx.payment.update({
-          where: { id: localPayment.id },
-          data: {
-            asaasPaymentId: asaasPayment.id,
-            pixCopiaECola: pixCopiaECola,
-            status: finalPaymentStatus,
-            ...(finalPaymentStatus === PaymentStatus.COMPLETED ? { paidAt: new Date() } : {}),
-          },
-        });
-
-        if (finalBookingStatus === BookingStatus.CONFIRMED) {
-          await tx.booking.update({
-            where: { id: newBooking.id },
-            data: { status: BookingStatus.CONFIRMED },
-          });
-          newBooking.status = BookingStatus.CONFIRMED;
-        }
-
-        return {
-          booking: newBooking,
-          payment: paymentDetails,
-          expiresAt: expiresAt.toISOString(),
-        };
       },
       {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        maxWait: 5_000,
-        timeout: 15_000,
+        maxWait: 3_000,
+        timeout: 5_000,
       },
     );
   } catch (error) {
     this.handlePrismaConflictError(error);
-
     if (error instanceof BadRequestException || error instanceof InternalServerErrorException) {
       throw error;
     }
+    throw new BadRequestException('Não foi possível verificar a disponibilidade da quadra.');
+  }
 
-    console.error('Erro na criação de agendamento/cobrança:', error);
+  const { newBooking, localPayment, courtBasePrice, serviceFee, totalPrice } = bookingResult;
+
+  // PASSO 5: Chamada Externa ao Asaas (Fora de qualquer transação de banco)
+  let asaasPayment: any;
+  try {
+    const arenaWalletId = newBooking.arena.asaasWalletId!;
+    const dueDate = new Date().toISOString().slice(0, 10);
+
+    const paymentPayload: any = {
+      customer: asaasCustomerId!,
+      billingType: dto.billingType,
+      value: totalPrice,
+      dueDate,
+      description: `Reserva ${newBooking.id} — ${newBooking.arena.name}`,
+      externalReference: `booking:${newBooking.id}`,
+      split: [
+        {
+          walletId: arenaWalletId,
+          fixedValue: courtBasePrice,
+        },
+      ],
+    };
+
+    if (dto.billingType === 'CREDIT_CARD') {
+      // 1. INJEÇÃO DO REMOTE IP
+      paymentPayload.remoteIp = clientIp;
+
+      if (dto.cardId) {
+        const savedCard = fullUser.creditCards.find((c) => c.id === dto.cardId);
+        if (!savedCard) {
+          throw new BadRequestException('Cartão de crédito informado não encontrado.');
+        }
+        paymentPayload.creditCardToken = savedCard.asaasToken;
+      } else if (dto.creditCardToken) {
+        paymentPayload.creditCardToken = dto.creditCardToken;
+      } else {
+        paymentPayload.creditCard = dto.creditCard;
+        paymentPayload.creditCardHolderInfo = dto.creditCardHolderInfo;
+      }
+    }
+
+    // Chamada remota
+    asaasPayment = await this.asaasService.createSplitPayment(paymentPayload);
+  } catch (error) {
+    // SE O ASAAS FALHAR: Cancela o booking e o payment para liberar a quadra imediatamente
+    await this.prisma.booking.update({
+      where: { id: newBooking.id },
+      data: { status: BookingStatus.CANCELLED },
+    });
+    await this.prisma.payment.update({
+      where: { id: localPayment.id },
+      data: { status: PaymentStatus.CANCELLED },
+    });
+
+    console.error('Erro na criação de cobrança no Asaas:', error);
     throw new BadRequestException(
-      'Não foi possível processar o agendamento devido a uma falha no sistema de pagamento. Tente novamente.',
+      error?.response?.data?.errors?.[0]?.description ||
+        'Não foi possível processar a cobrança junto ao provedor de pagamento.',
     );
   }
+
+  // PASSO 6: Atualiza banco com a resposta obtida do Asaas
+  let pixCopiaECola: string | undefined = undefined;
+  let paymentDetails: any = {
+    asaasPaymentId: asaasPayment.id,
+    billingType: dto.billingType,
+    status: asaasPayment.status,
+    courtBasePrice,
+    serviceFee,
+    totalPrice,
+  };
+
+  let finalBookingStatus: BookingStatus = BookingStatus.PENDING;
+  let finalPaymentStatus: PaymentStatus = PaymentStatus.PENDING;
+
+  if (dto.billingType === 'PIX') {
+    const qrCode = await this.asaasService.getPixQrCode(asaasPayment.id);
+    pixCopiaECola = qrCode.payload;
+    paymentDetails.pix = qrCode;
+  } else if (dto.billingType === 'CREDIT_CARD') {
+    const token = asaasPayment.creditCard?.creditCardToken;
+    paymentDetails.creditCardToken = token;
+
+    if (dto.saveCard && token && !dto.cardId && !dto.creditCardToken) {
+      const existingCount = fullUser.creditCards.length;
+
+      await this.prisma.creditCard.upsert({
+        where: { asaasToken: token },
+        update: {
+          holderName: dto.creditCardHolderInfo?.name || fullUser.name,
+          expiryMonth: dto.creditCard?.expiryMonth || '',
+          expiryYear: dto.creditCard?.expiryYear || '',
+        },
+        create: {
+          userId: user.id,
+          asaasToken: token,
+          brand: asaasPayment.creditCard?.creditCardBrand || 'UNKNOWN',
+          lastFourDigits:
+            asaasPayment.creditCard?.creditCardNumber ||
+            dto.creditCard?.number.slice(-4) ||
+            '0000',
+          holderName: dto.creditCardHolderInfo?.name || fullUser.name,
+          expiryMonth: dto.creditCard?.expiryMonth || '',
+          expiryYear: dto.creditCard?.expiryYear || '',
+          isDefault: existingCount === 0,
+        },
+      });
+    }
+
+    if (asaasPayment.status === 'CONFIRMED' || asaasPayment.status === 'RECEIVED') {
+      finalPaymentStatus = PaymentStatus.COMPLETED;
+      finalBookingStatus = BookingStatus.CONFIRMED;
+    }
+  }
+
+  // Persiste status finais no banco
+  await this.prisma.payment.update({
+    where: { id: localPayment.id },
+    data: {
+      asaasPaymentId: asaasPayment.id,
+      pixCopiaECola: pixCopiaECola,
+      status: finalPaymentStatus,
+      ...(finalPaymentStatus === PaymentStatus.COMPLETED ? { paidAt: new Date() } : {}),
+    },
+  });
+
+  if (finalBookingStatus === BookingStatus.CONFIRMED) {
+    await this.prisma.booking.update({
+      where: { id: newBooking.id },
+      data: { status: BookingStatus.CONFIRMED },
+    });
+    newBooking.status = BookingStatus.CONFIRMED;
+  }
+
+  return {
+    booking: newBooking,
+    payment: paymentDetails,
+    expiresAt: expiresAt.toISOString(),
+  };
 }
 
 
