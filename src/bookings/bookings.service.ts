@@ -237,13 +237,22 @@ export class BookingsService {
           if (dto.saveCard && token && !dto.cardId && !dto.creditCardToken) {
             const existingCount = fullUser.creditCards.length;
 
-            await tx.creditCard.create({
-              data: {
+            await tx.creditCard.upsert({
+              where: { asaasToken: token },
+              update: {
+                // Se o cartão já existe no banco, apenas atualiza dados se necessário
+                holderName: dto.creditCardHolderInfo?.name || fullUser.name,
+                expiryMonth: dto.creditCard?.expiryMonth || '',
+                expiryYear: dto.creditCard?.expiryYear || '',
+              },
+              create: {
                 userId: user.id,
                 asaasToken: token,
                 brand: asaasPayment.creditCard?.creditCardBrand || 'UNKNOWN',
                 lastFourDigits:
-                  asaasPayment.creditCard?.creditCardNumber || dto.creditCard?.number.slice(-4) || '0000',
+                  asaasPayment.creditCard?.creditCardNumber ||
+                  dto.creditCard?.number.slice(-4) ||
+                  '0000',
                 holderName: dto.creditCardHolderInfo?.name || fullUser.name,
                 expiryMonth: dto.creditCard?.expiryMonth || '',
                 expiryYear: dto.creditCard?.expiryYear || '',
