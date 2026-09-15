@@ -57,11 +57,6 @@ export class PublicCheckoutDto {
   @IsString()
   platformPlanId: string;
 
-  @ApiProperty({ example: 'Arena Beach Social' })
-  @IsNotEmpty()
-  @IsString()
-  arenaName: string;
-
   @ApiProperty({ example: 'João da Silva' })
   @IsNotEmpty()
   @IsString()
@@ -83,22 +78,15 @@ export class PublicCheckoutDto {
     description: 'CPF (apenas números ou formatado)',
   })
   @IsString()
-  @IsOptional()
   @Matches(/^\d{3}\.?\d{3}\.?\d{3}-?\d{2}$/, {
     message: 'CPF deve estar em um formato válido (11 dígitos)',
   })
-  cpf?: string;
+  cpf: string;
 
   @ApiProperty({ example: 'contato@user.com.br' })
   @IsNotEmpty()
   @IsString()
   email: string;
-
-
-  @ApiProperty({ example: '83873371000105' })
-  @IsNotEmpty()
-  @IsString()
-  cpfCnpj: string;
 
   @ApiProperty({ enum: CheckoutBillingType, example: CheckoutBillingType.PIX })
   @IsNotEmpty()

@@ -25,7 +25,7 @@ export class PublicCheckoutService {
   }
 
   async processCheckout(dto: PublicCheckoutDto) {
-   const cleanDoc = dto.cpfCnpj.replace(/\D/g, '');
+   const cleanDoc = dto.cpf.replace(/\D/g, '');
     const userEmail = dto.email.toLowerCase().trim();
 
     const plan = await this.prisma.platformPlan.findUnique({
@@ -116,7 +116,7 @@ export class PublicCheckoutService {
         const customerResponse = await axios.post(
           `${this.asaasApiUrl}/customers`,
           {
-            name: dto.arenaName || dto.name,
+            name: dto.name,
             email: userEmail,
             cpfCnpj: cleanDoc,
             phone: dto.phone,
@@ -146,7 +146,7 @@ export class PublicCheckoutService {
       value: Number(plan.price),
       nextDueDate: todayStr,
       cycle: plan.billingCycle,
-      description: `Assinatura Plano ${plan.name} - ${dto.arenaName || dto.name}`,
+      description: `Assinatura Plano ${plan.name} - ${dto.name}`,
       externalReference: `arena_sub:${subscription.id}`,
     };
 
