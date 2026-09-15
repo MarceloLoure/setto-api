@@ -13,9 +13,9 @@ export class SocialLoginDto {
   providerId: string;
 
   @ApiProperty({ example: 'marcelo@example.com' })
-  @IsEmail()
-  @IsNotEmpty()
-  email: string;
+  @IsOptional()
+@IsEmail()
+  email?: string;
 
   @ApiProperty({ example: 'Marcelo Silva' })
   @IsString()

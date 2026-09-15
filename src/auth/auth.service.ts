@@ -71,7 +71,7 @@ export class AuthService {
 
     const providerField = provider === 'google' ? { googleId: providerId } : { appleId: providerId };
 
-    // 1. Procura usuário pelo ID do Provedor Social
+    // 1. Procura usuário pelo ID do Provedor Social (Apple ID / Google ID)
     let user = await this.prisma.user.findFirst({
       where: providerField,
       include: {
@@ -82,8 +82,8 @@ export class AuthService {
       },
     });
 
-    // 2. Se não achou pelo ID social, tenta vínculo pelo E-mail
-    if (!user) {
+    // 2. Se não encontrou pelo ID social, tenta vincular por E-mail (caso já tenha cadastro manual)
+    if (!user && email) {
       user = await this.prisma.user.findUnique({
         where: { email },
         include: {
@@ -107,7 +107,7 @@ export class AuthService {
                     path: avatarUrl,
                   },
                 },
-            }),
+              }),
           },
           include: {
             avatar: { select: { id: true, name: true, path: true } },
@@ -119,11 +119,18 @@ export class AuthService {
       }
     }
 
-    // 3. Se usuário não existe, cria um novo
+    // 3. Se não existe e não veio e-mail, não é possível criar uma nova conta
     if (!user) {
+      if (!email) {
+        throw new BadRequestException(
+          'Não foi possível identificar a conta. Autorize o e-mail no login com a Apple.',
+        );
+      }
+
+      // 4. Criação do novo usuário no primeiro acesso
       user = await this.prisma.user.create({
         data: {
-          name,
+          name: name || 'Usuário Apple',
           email,
           ...providerField,
           role: 'ATHLETE',
@@ -145,6 +152,7 @@ export class AuthService {
       });
     }
 
+    // Usar o e-mail gravado no banco de dados para assinar o JWT
     const payload = { sub: user.id, email: user.email, role: user.role };
 
     return {
