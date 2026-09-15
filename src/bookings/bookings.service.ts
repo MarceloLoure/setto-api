@@ -19,28 +19,25 @@ import { brazilTimeToUtcDate, parseAppMobileTimestamp } from '../common/utils/ti
 
 const MAX_FIXED_FEE = 5.0;
 
-function calculateServiceFee(
-  hourlyRate: number, 
-  durationInHours: number, 
-  platformFeePercentFromDb: number
-): {
-  courtBasePrice: number;
-  serviceFee: number;
-  totalPrice: number;
-} {
-  const courtBasePrice = Number((durationInHours * hourlyRate).toFixed(2));
+export function calculateServiceFee(
+  hourlyRate: number,
+  durationInHours: number,
+  platformFeePercent: number,
+) {
+  // 1. O valor total pago pelo cliente é o valor bruto estipulado pela arena
+  const totalPrice = hourlyRate * durationInHours;
 
-  // 1. Calcula a taxa para UMA hora de quadra
-  const feePercentForOneHour = hourlyRate * (platformFeePercentFromDb / 100);
-  const feePerFeeHour = Math.min(feePercentForOneHour, MAX_FIXED_FEE);
+  // 2. A taxa da plataforma é a porcentagem descontada do valor total
+  const serviceFee = Number(((totalPrice * platformFeePercent) / 100).toFixed(2));
 
-  // 2. Multiplica a taxa pelo número de horas/duração
-  const serviceFee = Number((feePerFeeHour * durationInHours).toFixed(2));
+  // 3. O valor líquido que vai para a arena é o total menos a comissão
+  const courtBasePrice = Number((totalPrice - serviceFee).toFixed(2));
 
-  // 3. Valor total repassado ao cliente
-  const totalPrice = Number((courtBasePrice + serviceFee).toFixed(2));
-
-  return { courtBasePrice, serviceFee, totalPrice };
+  return {
+    totalPrice,      // Valor cobrado do cliente (bruto)
+    serviceFee,      // Comissão descontada para a plataforma
+    courtBasePrice,  // Repasse líquido enviado no split da wallet da arena
+  };
 }
 
 @Injectable()
