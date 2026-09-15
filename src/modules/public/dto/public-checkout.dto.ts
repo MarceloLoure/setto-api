@@ -73,10 +73,11 @@ export class PublicCheckoutDto {
   @IsOptional()
   phone?: string;
   
-  @ApiPropertyOptional({
+  @ApiProperty({
     example: '12345678901',
-    description: 'CPF (apenas números ou formatado)',
+    description: 'CPF do pagador/gestor',
   })
+  @IsNotEmpty({ message: 'O CPF do comprador é obrigatório.' })
   @IsString()
   @Matches(/^\d{3}\.?\d{3}\.?\d{3}-?\d{2}$/, {
     message: 'CPF deve estar em um formato válido (11 dígitos)',

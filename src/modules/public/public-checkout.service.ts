@@ -25,8 +25,13 @@ export class PublicCheckoutService {
   }
 
   async processCheckout(dto: PublicCheckoutDto) {
-   const cleanDoc = dto.cpf.replace(/\D/g, '');
+    const rawCpf = dto.cpf || '';
+    const cleanDoc = rawCpf.replace(/\D/g, '');
     const userEmail = dto.email.toLowerCase().trim();
+
+    if (!cleanDoc) {
+      throw new BadRequestException('CPF do comprador é obrigatório para emissão da assinatura.');
+    }
 
     const plan = await this.prisma.platformPlan.findUnique({
       where: { id: dto.platformPlanId },
@@ -34,19 +39,6 @@ export class PublicCheckoutService {
 
     if (!plan || !plan.isActive) {
       throw new BadRequestException('Plano selecionado inválido ou inativo.');
-    }
-
-    // 2. Trava de Segurança contra Invasão de Arena Existente
-    const existingArena = await this.prisma.arena.findFirst({
-      where: {
-        OR: [{ cnpj: cleanDoc }, { email: userEmail }],
-      },
-    });
-
-    if (existingArena) {
-      throw new ConflictException(
-        'Esta Arena (CNPJ/CPF ou E-mail) já está cadastrada no sistema. Entre em contato com o suporte se precisar de ajuda.',
-      );
     }
 
     const existingUser = await this.prisma.user.findUnique({
@@ -80,7 +72,7 @@ export class PublicCheckoutService {
         data: {
           role: Role.ARENA_ADMIN,
           ...(dto.phone && { phone: dto.phone }),
-          ...(dto.cpf && { cpf: dto.cpf }),
+          ...(dto.cpf && { cpf: cleanDoc }),
         },
       });
     } else {
@@ -93,7 +85,7 @@ export class PublicCheckoutService {
           email: dto.email,
           password: hashedPassword,
           phone: dto.phone,
-          cpf: dto.cpf,
+          cpf: cleanDoc,
           role: Role.ARENA_ADMIN,
         },
       });
