@@ -2,9 +2,14 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { NestExpressApplication } from '@nestjs/platform-express';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // 2. PASSAR O TIPO GENÉRICO NA CRIAÇÃO DO APP
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // 3. ADICIONAR ESTA LINHA PARA HABILITAR O PROXY
+  app.set('trust proxy', true);
 
   // Habilita CORS para permitir que requisições do App (Flutter) e Web (Next.js) passem sem bloqueios
   app.enableCors({
@@ -27,7 +32,7 @@ async function bootstrap() {
 
   // Configuração da Documentação Interativa do Swagger
   const config = new DocumentBuilder()
-    .setTitle('Beach Social Club - API')
+    .setTitle('Setto Arenas - API')
     .setDescription(
       'API B2B2C para Gestão de Arenas, Vagas ForFun, Elo e Comunidade Esportiva',
     )
