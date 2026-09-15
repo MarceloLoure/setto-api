@@ -43,14 +43,14 @@ export class CardsService {
     }
 
     if (!asaasCustomerId) {
-        throw new BadRequestException('Não foi possível gerar a identificação do cliente no Asaas.');
+      throw new BadRequestException('Não foi possível gerar a identificação do cliente no Asaas.');
     }
 
-    // 2. Chama o Asaas para tokenizar (TypeScript agora sabe que asaasCustomerId é string)
+    // 2. Chama o Asaas para tokenizar
     const tokenizedData = await this.asaasService.tokenizeCreditCard({
-        customer: asaasCustomerId,
-        creditCard: dto.creditCard,
-        creditCardHolderInfo: { ...dto.creditCardHolderInfo, phone: dto.creditCardHolderInfo.phone || '' },
+      customer: asaasCustomerId,
+      creditCard: dto.creditCard,
+      creditCardHolderInfo: { ...dto.creditCardHolderInfo, phone: dto.creditCardHolderInfo.phone || '' },
     });
 
     if (!tokenizedData?.creditCardToken) {
@@ -62,17 +62,30 @@ export class CardsService {
       where: { userId },
     });
 
-    // 4. Salva no banco de dados local
-    return await this.prisma.creditCard.create({
-      data: {
+    const cardToken = tokenizedData.creditCardToken;
+
+    // 4. Salva ou Atualiza no banco local usando UPSERT para evitar o erro P2002
+    return await this.prisma.creditCard.upsert({
+      where: {
+        asaasToken: cardToken,
+      },
+      update: {
         userId,
-        asaasToken: tokenizedData.creditCardToken,
         brand: tokenizedData.creditCardBrand || 'UNKNOWN',
         lastFourDigits: tokenizedData.creditCardNumber || dto.creditCard.number.slice(-4),
         holderName: dto.creditCard.holderName,
         expiryMonth: dto.creditCard.expiryMonth,
         expiryYear: dto.creditCard.expiryYear,
-        isDefault: existingCardsCount === 0, // Se for o primeiro, já nasce como padrão
+      },
+      create: {
+        userId,
+        asaasToken: cardToken,
+        brand: tokenizedData.creditCardBrand || 'UNKNOWN',
+        lastFourDigits: tokenizedData.creditCardNumber || dto.creditCard.number.slice(-4),
+        holderName: dto.creditCard.holderName,
+        expiryMonth: dto.creditCard.expiryMonth,
+        expiryYear: dto.creditCard.expiryYear,
+        isDefault: existingCardsCount === 0,
       },
       select: {
         id: true,
